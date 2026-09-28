@@ -1,0 +1,51 @@
+name: Build, check & deploy
+
+# Every push to main rebuilds site/ -> dist/, runs tools/check.py (broken links, missing
+# meta, prototype copy, etc.) and, only if every check passes, publishes to GitHub Pages.
+#
+# Environment is controlled by two repository variables (Settings -> Secrets and variables -> Actions -> Variables):
+#   SITE_ENV  staging | production      (default: staging -> noindex, no analytics)
+#   SITE_URL  public base URL            (default: https://ascendpoint.github.io)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: pages
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install Pillow
+        run: pip install pillow
+      - name: Build + check
+        run: python tools/build.py --env "${{ vars.SITE_ENV || 'staging' }}" --base-url "${{ vars.SITE_URL || 'https://ascendpoint.github.io' }}"
+      - uses: actions/upload-pages-artifact@v3
+        if: github.event_name != 'pull_request'
+        with:
+          path: dist
+
+  deploy:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - id: deployment
+        uses: actions/deploy-pages@v4
