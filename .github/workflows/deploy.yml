@@ -1,11 +1,12 @@
 name: Build, check & deploy
 
-# Every push to main rebuilds site/ -> dist/, runs tools/check.py (broken links, missing
-# meta, prototype copy, etc.) and, only if every check passes, publishes to GitHub Pages.
-#
-# Environment is controlled by two repository variables (Settings -> Secrets and variables -> Actions -> Variables):
-#   SITE_ENV  staging | production      (default: staging -> noindex, no analytics)
-#   SITE_URL  public base URL            (default: https://ascendpoint.github.io)
+# Every push to main:
+#   1. builds the production site (canonical https://ascendpoint.agency) and runs every check
+#      (tools/check.py + tools/test_redirects.py). Any failure stops here: nothing deploys.
+#   2. publishes the built site to the `kinsta` branch. Kinsta (Sevalla static hosting) watches
+#      that branch and redeploys automatically, usually within a minute.
+#   3. publishes a noindex staging copy to GitHub Pages (https://ascendpoint.github.io).
+# Pull requests run step 1 only.
 
 on:
   push:
@@ -14,32 +15,69 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
 concurrency:
-  group: pages
-  cancel-in-progress: true
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: false
 
 jobs:
   build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0          # full history: sitemap <lastmod> comes from git dates
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - name: Install Pillow
-        run: pip install pillow
-      - name: Build + check
-        run: python tools/build.py --env "${{ vars.SITE_ENV || 'staging' }}" --base-url "${{ vars.SITE_URL || 'https://ascendpoint.github.io' }}"
+      - run: pip install pillow
+      - name: Build + check (production)
+        run: python tools/build.py --env production --base-url https://ascendpoint.agency
+      - name: Build + check (staging)
+        run: DIST_DIR=dist-staging python tools/build.py --env staging --base-url https://ascendpoint.github.io
+      - uses: actions/upload-artifact@v4
+        with:
+          name: site-production
+          path: dist
+          include-hidden-files: true
       - uses: actions/upload-pages-artifact@v3
         if: github.event_name != 'pull_request'
         with:
-          path: dist
+          path: dist-staging
 
-  deploy:
+  kinsta:
+    if: github.event_name != 'pull_request'
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: site-production
+          path: dist
+      - name: Publish dist/ to the kinsta branch
+        env:
+          REPO: ${{ github.repository }}
+          TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SHA: ${{ github.sha }}
+          MSG: ${{ github.event.head_commit.message }}
+        run: |
+          git clone --quiet --depth 1 --branch kinsta "https://x-access-token:${TOKEN}@github.com/${REPO}.git" out \
+            || { git init --quiet out && git -C out checkout --quiet -b kinsta && git -C out remote add origin "https://x-access-token:${TOKEN}@github.com/${REPO}.git"; }
+          find out -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+          cp -a dist/. out/
+          cd out
+          git config user.name "AscendPoint site bot"
+          git config user.email "actions@github.com"
+          git add -A
+          if git diff --cached --quiet; then echo "No changes to deploy"; exit 0; fi
+          git commit --quiet -m "Deploy ${SHA::7}: ${MSG%%$'\n'*}"
+          git push --quiet origin kinsta
+          echo "Published ${SHA::7} to kinsta branch"
+
+  pages:
     if: github.event_name != 'pull_request'
     needs: build
     runs-on: ubuntu-latest
@@ -49,3 +87,17 @@ jobs:
     steps:
       - id: deployment
         uses: actions/deploy-pages@v4
+
+  verify-live:
+    # After Kinsta picks up the kinsta branch, test the real host: every page, every old
+    # WordPress URL, headers, 404. Set the repository variable LIVE_URL to the site's
+    # address (the *.sevalla.page preview now; https://ascendpoint.agency after go-live).
+    if: github.event_name != 'pull_request' && vars.LIVE_URL != ''
+    needs: kinsta
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python tools/live_check.py "${{ vars.LIVE_URL }}" --wait-for "${{ github.sha }}"

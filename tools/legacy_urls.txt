@@ -1,0 +1,57 @@
+# Every URL the WordPress site at ascendpoint.agency exposed (Sep 28 2026), gathered from
+# sitemap_index.xml (page/post/category sitemaps), the WP REST API (all published pages,
+# posts, categories, authors - including funnel pages left out of the sitemap), internal
+# links found on every page, and legacy URLs WordPress was already redirecting.
+# tools/test_redirects.py checks that each one resolves (directly or via one 301) to a real page.
+/
+/about/
+/contact/
+/our-results/
+/blog/
+/capabilities/
+/capabilities/healthcare-seo-ai-ranking/
+/capabilities/healthcare-ppc-ads/
+/capabilities/healthcare-social-media-ads/
+/capabilities/healthcare-website-design/
+/capabilities/healthcare-branding/
+/capabilities/healthcare-video-and-photography/
+/capabilities/healthcare-strategy/
+/capabilities/healthcare-lead-tracking-analytics/
+/legal-marketing/
+/legal-marketing/legal-marketing-seo/
+/legal-marketing/legal-marketing-ppc-ads/
+/legal-marketing/legal-marketing-web-design/
+/legal-marketing/legal-marketing-social-media/
+/other-industries/
+/strategy-session/
+/schedule-a-call/
+/call-confirmed/
+/ai-powered-business-solutions/
+/marketing-for-dentists-building-a-thriving-practice-in-the-digital-age/
+/how-to-show-up-in-ai-your-business-guide-to-ai-powered-search-visibility/
+/what-is-local-seo-your-complete-guide-to-dominating-your-local-market/
+/event-1/
+/event-2/
+/event-3/
+/category/news/
+/category/events/
+/author/devvirtuallythere-agency/
+/author/frankievirtuallythere-agency/
+/author/websites/
+/author/kelseyserp-agency/
+/author/sonia/
+/solutions/healthcare-ppc-ads/
+/solutions/healthcare-seo/
+/solutions/healthcare-social-media-ads/
+/solutions/healthcare-website-design/
+/home/
+/blog/page/2/
+/feed/
+/sitemap_index.xml
+/sitemaps.xml
+/page-sitemap1.xml
+/post-sitemap1.xml
+/category-sitemap1.xml
+/sitemap.xml
+/wp-login.php
+/wp-admin/
