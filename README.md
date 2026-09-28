@@ -60,10 +60,20 @@ Pages use clean URLs (`/about`, not `/about.html`); `build.py` rewrites internal
 
 ## Contact form
 
-`contact.html` embeds the same Typeform the current site uses
-(*Qualifying Questionnaire – Ascend Point (Main Site – Not Funnel)*, form `dT7TSyBW`,
-live-embed id `01JWAE07MR9CFT4ST1BWF9ZFDP`), so leads keep flowing wherever they go today.
-UTM parameters on the page URL pass through to the form's hidden fields.
+Patrick's contact page routes dental practices to SERP Dental and med spas to MMW with the
+three cards; the form underneath is for everyone else (agency founders, investors, partners,
+job seekers). It's a Typeform built for this page:
+
+- **Form:** *AscendPoint Website – Contact (Founders, Partners & Investors)*, id `Bs7qxsde`,
+  theme *AscendPoint Website* (`G1U3NOCg`, navy/cyan, Montserrat), workspace *SERP Agency*.
+- **Questions:** who you are → name → email → phone (optional) → company (optional) → message.
+- **Routing:** anyone who picks *Dental practice* ends on a "Book with SERP Dental" screen;
+  *Med spa / aesthetics / women's health* ends on "Meet with Lori" (MMW). Everyone else
+  gets the standard thank-you. All responses are kept in Typeform either way.
+- **Notification:** every submission emails **kyle@ascendpoint.agency** with all answers.
+  Add Patrick/Sonia in Typeform → Connect → Email notifications.
+- **Attribution:** `utm_*` parameters on the page URL pass through to hidden fields, plus
+  `landing_page`.
 
 ## Going live on ascendpoint.agency (not done yet — on purpose)
 
