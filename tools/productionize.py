@@ -41,7 +41,7 @@ DESCRIPTIONS = {
 ARTICLES = {"ai-powered-business-solutions.html", "how-to-show-up-in-ai.html",
             "marketing-for-dentists.html", "what-is-local-seo.html"}
 
-TYPEFORM_LIVE_ID = "01JWAE07MR9CFT4ST1BWF9ZFDP"  # "Qualifying Questionnaire - Ascend Point (Main Site - Not Funnel)", form dT7TSyBW
+TYPEFORM_FORM_ID = "Bs7qxsde"  # "AscendPoint Website – Contact (Founders, Partners & Investors)"; routes dental -> SERP, med spa -> MMW; emails kyle@ascendpoint.agency
 
 COPY_FIXES = [
     # (file glob, old, new)
@@ -169,7 +169,7 @@ def jsonld(name: str, s: str, title: str, desc: str, og: str) -> str:
 
 
 def contact_embed(s: str) -> str:
-    if "data-tf-live" in s:
+    if "data-tf-widget" in s or "data-tf-live" in s:
         return s
     start = s.find('<form class="form" id="contact-form"')
     end_thanks = s.find('<div class="thanks" id="thanks"')
@@ -179,12 +179,14 @@ def contact_embed(s: str) -> str:
     btn = s.find('id="again"', end_thanks)
     close = s.find("</div>", s.find("</button>", btn)) + len("</div>")
     embed = (
-        '<div class="tf-wrap" style="min-height:560px;border-radius:14px;overflow:hidden">\n'
-        f'<div data-tf-live="{TYPEFORM_LIVE_ID}"></div>\n'
+        '<div class="tf-wrap" style="border-radius:14px;overflow:hidden;border:1px solid var(--border);background:#fff">\n'
+        f'<div data-tf-widget="{TYPEFORM_FORM_ID}" data-tf-opacity="100" data-tf-inline-on-mobile data-tf-medium="snippet" '
+        'data-tf-transitive-search-params="utm_source,utm_medium,utm_campaign,utm_content,utm_term" '
+        'data-tf-iframe-props="title=Contact AscendPoint" style="width:100%;height:600px"></div>\n'
         "</div>\n"
         '<p class="body small muted" style="margin-top:14px">Prefer to talk? Call '
-        '<a href="tel:+12135137225">(213) 513-7225</a>. Investors, partners and agency founders: '
-        'mention it in your first answer and we\'ll route you to Patrick or Sonia.</p>\n'
+        '<a href="tel:+12135137225">(213) 513-7225</a>.</p>\n'
+        '<script>(function(){var w=document.querySelector("[data-tf-widget]");if(w)w.setAttribute("data-tf-hidden","landing_page="+encodeURIComponent(location.pathname));})();</script>\n'
         '<script src="https://embed.typeform.com/next/embed.js" async></script>'
     )
     return s[:start] + embed + s[close:]
