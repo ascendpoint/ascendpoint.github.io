@@ -1,0 +1,35 @@
+# Old WordPress URLs on ascendpoint.agency -> new pages (301).
+# Used by Cloudflare Pages at production cutover. GitHub Pages ignores this file.
+# Source: ascendpoint.agency sitemap, Sep 28 2026.
+
+/about/                                                       /about                        301
+/contact/                                                     /contact                      301
+/our-results/                                                 /results                      301
+/our-results                                                  /results                      301
+/capabilities/                                                /capabilities                 301
+/capabilities/healthcare-seo-ai-ranking/                      /seo-ai-ranking               301
+/capabilities/healthcare-ppc-ads/                             /ppc-ads                      301
+/capabilities/healthcare-social-media-ads/                    /social-media                 301
+/capabilities/healthcare-website-design/                      /website-design               301
+/capabilities/healthcare-branding/                            /branding                     301
+/capabilities/healthcare-video-and-photography/               /video-photography            301
+/capabilities/healthcare-strategy/                            /strategy                     301
+/capabilities/healthcare-lead-tracking-analytics/             /lead-tracking-analytics      301
+/capabilities/*                                               /capabilities                 301
+/legal-marketing/*                                            /capabilities                 301
+/other-industries/                                            /capabilities                 301
+/blog/                                                        /insights                     301
+/blog/*                                                       /insights                     301
+/category/news/                                               /news                         301
+/category/events/                                             /webinars-events              301
+/category/*                                                   /insights                     301
+/event-1/                                                     /webinars-events              301
+/event-2/                                                     /webinars-events              301
+/event-3/                                                     /webinars-events              301
+/ai-powered-business-solutions/                               /ai-powered-business-solutions 301
+/marketing-for-dentists-building-a-thriving-practice-in-the-digital-age/  /marketing-for-dentists  301
+/how-to-show-up-in-ai-your-business-guide-to-ai-powered-search-visibility/ /how-to-show-up-in-ai  301
+/what-is-local-seo-your-complete-guide-to-dominating-your-local-market/    /what-is-local-seo     301
+/wp-admin/*                                                   /                             302
+/wp-login.php                                                 /                             302
+/feed/                                                        /news                         301
