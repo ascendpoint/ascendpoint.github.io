@@ -1,0 +1,6 @@
+# ascendpoint.agency: every crawler welcome, including AI assistants (GPTBot, ClaudeBot,
+# PerplexityBot, Google-Extended). Being citable by AI is part of what we sell.
+User-agent: *
+Allow: /
+
+Sitemap: https://ascendpoint.agency/sitemap.xml
