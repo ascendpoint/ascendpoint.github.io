@@ -37,7 +37,7 @@ def match(rule_from: str, url: str, host: str):
         rule_from = u.path
     if rule_from.endswith("*"):
         prefix = rule_from[:-1]
-        if url.startswith(prefix):
+        if url.startswith(prefix) and len(url) > len(prefix):  # Kinsta: splat needs >= 1 char
             return url[len(prefix):]
         return None
     return "" if url == rule_from else None

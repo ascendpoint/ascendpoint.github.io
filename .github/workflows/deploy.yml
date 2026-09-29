@@ -76,6 +76,19 @@ jobs:
           git commit --quiet -m "Deploy ${SHA::7}: ${MSG%%$'\n'*}"
           git push --quiet origin kinsta
           echo "Published ${SHA::7} to kinsta branch"
+      - name: Tell Kinsta to deploy the new build
+        # The Kinsta (Sevalla) static site is connected to the public repo URL, so it is told to
+        # redeploy through the Sevalla API. Needs repo secret SEVALLA_API_KEY and variable
+        # SEVALLA_SITE_ID (the static site's UUID). Skipped if either is missing.
+        env:
+          KEY: ${{ secrets.SEVALLA_API_KEY }}
+          SITE: ${{ vars.SEVALLA_SITE_ID }}
+        run: |
+          if [ -z "$KEY" ] || [ -z "$SITE" ]; then echo "Sevalla deploy trigger not configured; skipping"; exit 0; fi
+          code=$(curl -sS -o resp.json -w "%{http_code}" -X POST "https://api.sevalla.com/v3/static-sites/${SITE}/deployments" \
+            -H "Authorization: Bearer ${KEY}" -H "Content-Type: application/json" -d '{"branch":"kinsta"}')
+          echo "Sevalla responded ${code}"; head -c 400 resp.json; echo
+          [ "$code" = "201" ] || [ "$code" = "200" ] || exit 1
 
   pages:
     if: github.event_name != 'pull_request'

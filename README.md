@@ -7,10 +7,10 @@ dashboard, same login). No WordPress, no plugins, nothing to patch.
 | | |
 |---|---|
 | **Production** | https://ascendpoint.agency (WordPress until go-live, see *Go-live runbook*) |
-| **Kinsta preview** | the `*.sevalla.page` address shown in Sevalla → Static sites → ascendpoint-agency |
+| **Kinsta preview** | https://ascendpoint-agency-3ueyp.kinsta.page (noindex, no analytics) |
 | **Staging (noindex)** | https://ascendpoint.github.io |
 | **Repo** | https://github.com/ascendpoint/ascendpoint.github.io (`main` = source, `kinsta` = built site) |
-| **Deploy** | push to `main` → GitHub Actions builds + checks → `kinsta` branch → Kinsta redeploys (~1–2 min) |
+| **Deploy** | push to `main` → GitHub Actions builds + checks → `kinsta` branch → Sevalla API deploy → live check (~2 min) |
 
 ## Changing the site: ask Claude
 
@@ -103,17 +103,20 @@ emails keep working with no redirect hop. Everything else the old site exposed (
 pages, /other-industries/, /solutions/*, category, author, event, feed and sitemap URLs) 301s
 to the closest page. The full inventory is `tools/legacy_urls.txt`; the build proves every one.
 
-## Kinsta settings (Sevalla → Static sites → ascendpoint-agency)
+## Kinsta settings (Sevalla → company "SERP Agency" → Static sites → ascendpoint-agency)
 
 | Setting | Value |
 |---|---|
-| Repository / branch | `ascendpoint/ascendpoint.github.io` / **`kinsta`** |
-| Auto-deploy | on |
+| Preview address | https://ascendpoint-agency-3ueyp.kinsta.page |
+| Source | public repo `https://github.com/ascendpoint/ascendpoint.github.io`, branch **`kinsta`** |
 | Build site before publishing | **off** (GitHub Actions already built and checked it) |
 | Publish directory | *(blank = repo root)* |
-| Pretty URLs | on (`/about` → `/about/`) |
+| Deploys | GitHub Actions calls the Sevalla API (`POST /v3/static-sites/{id}/deployments`) after each publish. Needs repo secret `SEVALLA_API_KEY` + variable `SEVALLA_SITE_ID`. Without them, click **Deploy now** in Sevalla. |
+| Live verification | repo variable `LIVE_URL` (preview address now, `https://ascendpoint.agency` after go-live) |
 
 `_redirects` and `_headers` sit at the root of the `kinsta` branch, which is where Kinsta reads them.
+Kinsta quirk (verified live): a splat rule `/x/*` does not match the bare `/x/`, so every splat
+has an exact twin; `tools/test_redirects.py` simulates that behaviour.
 
 ## Go-live runbook (WordPress → Kinsta)
 
@@ -128,7 +131,7 @@ to the closest page. The full inventory is `tools/legacy_urls.txt`; the build pr
 5. Google Search Console: submit `https://ascendpoint.agency/sitemap.xml`; URL-inspect the home
    page. GA4: confirm real-time traffic from the new site.
 6. Add this rule at the top of `site/_redirects` so the preview address stops competing with
-   the real domain: `https://<site>.sevalla.page/*  https://ascendpoint.agency/:splat  301!`
+   the real domain: `https://ascendpoint-agency-3ueyp.kinsta.page/*  https://ascendpoint.agency/:splat  301!` (plus the bare `/` twin)
 7. Keep the WordPress install 30 days as a rollback (rollback = point DNS back), then cancel it.
 
 ## Access
