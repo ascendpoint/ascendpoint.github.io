@@ -2,6 +2,8 @@
 # sitemap_index.xml (page/post/category sitemaps), the WP REST API (all published pages,
 # posts, categories, authors - including funnel pages left out of the sitemap), internal
 # links found on every page, and legacy URLs WordPress was already redirecting.
+# (/wp-login.php is left out: Kinsta's edge firewall answers it with 403 before any rule runs,
+# which is what we want for a login URL that no longer exists.)
 # tools/test_redirects.py checks that each one resolves (directly or via one 301) to a real page.
 /
 /about/
@@ -53,5 +55,4 @@
 /post-sitemap1.xml
 /category-sitemap1.xml
 /sitemap.xml
-/wp-login.php
 /wp-admin/
