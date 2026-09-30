@@ -171,8 +171,8 @@ def jsonld(p: Page, base: str, image: str, modified: str) -> str:
     url = base + p.url
     graph = [
         {"@type": "Organization", "@id": org_id, "url": base + "/",
-         "logo": {"@type": "ImageObject", "@id": f"{base}/#logo", "url": f"{base}/img/ap-logo-color.png",
-                  "width": 600, "height": 154, "caption": ORG["name"]},
+         "logo": {"@type": "ImageObject", "@id": f"{base}/#logo", "url": f"{base}/img/ap-logo-tm-color.png",
+                  "width": 646, "height": 154, "caption": ORG["name"]},
          "image": {"@id": f"{base}/#logo"}, **ORG},
         {"@type": "WebSite", "@id": site_id, "url": base + "/", "name": ORG["name"],
          "description": "The growth platform for local healthcare", "publisher": {"@id": org_id}, "inLanguage": "en-US"},

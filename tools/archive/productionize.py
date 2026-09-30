@@ -101,7 +101,7 @@ def make_og(name: str, src, title: str) -> str:
         # Branded fallback: navy card, logo, page title.
         im = Image.new("RGB", (1200, 630), NAVY)
         d = ImageDraw.Draw(im)
-        logo = Image.open(SITE / "img" / "ap-logo.png").convert("RGBA")
+        logo = Image.open(SITE / "img" / "ap-logo-tm.png").convert("RGBA")
         logo.thumbnail((420, 110))
         im.paste(logo, (80, 80), logo)
         d.rectangle([80, 250, 200, 256], fill=(62, 199, 227))

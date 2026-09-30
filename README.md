@@ -94,6 +94,18 @@ dates, `feed.xml`, `llms.txt`, `robots.txt`, `_headers`, and Google Tag Manager
 - **Rename or remove a page:** move/delete the file, then add a 301 in `site/_redirects`.
   `tools/test_redirects.py` fails the build if an old URL stops resolving.
 
+### Brand assets (source: Drive "AscendPoint Brand Assets", Sonia)
+
+- **Logos (™ versions):** `img/ap-logo-tm.webp` = AscendPoint-Agency-Logo-T02 (sky mark + white
+  type) for the dark header/footer; `img/ap-logo-tm-color.png` = AscendPoint-Agency-Logo-TM (sky
+  mark + navy type) for light backgrounds and the Organization logo in JSON-LD. Images are cached
+  30 days, so a changed logo gets a **new file name** (update `_layout/*.html` and `tools/build.py`).
+- **Pattern:** `img/brand-pattern.svg` is one repeat tile of "AscendPoint Agency - Pattern-01"
+  (vector, taken from Pattern.ai): sky #3EC7E3 at 16% on Prussian #003251. Used by `.hero::before`
+  (right side, fading out to the left) and `.cta-band::before` in `assets/css/site.css`.
+- **Share cards for pages without a photo:** `node tools/og-card.js "Title" site/img/og/x.jpg
+  --kicker "Label"` renders a 1200x630 navy card with the pattern + ™ logo (needs Playwright).
+
 ## URLs and redirects
 
 Every page that existed on the WordPress site kept its exact URL (/, /about/, /contact/,
