@@ -182,7 +182,7 @@ def jsonld(p: Page, base: str, image: str, modified: str) -> str:
         if p.url.startswith(prefix) and p.url != u:
             crumbs.append((n, u))
     if p.type == "post":
-        crumbs.append(("Insights", "/blog/"))
+        crumbs.append(("Blog", "/blog/"))
     if p.url != "/":
         crumbs.append((p.get("name") or p.get("title"), p.url))
     webpage = {"@type": WEBPAGE_TYPES.get(p.type, "WebPage"), "@id": url + "#webpage", "url": url,
@@ -300,7 +300,7 @@ def write_feed(pages, base):
     now = format_datetime(dt.datetime.now(dt.timezone.utc))
     out = ['<?xml version="1.0" encoding="UTF-8"?>',
            '<rss version="2.0" xmlns:atom="http://www.w3.org/2005/Atom"><channel>',
-           "<title>AscendPoint Agency: News &amp; Insights</title>", f"<link>{base}/</link>",
+           "<title>AscendPoint Agency: News &amp; Blog</title>", f"<link>{base}/</link>",
            f'<atom:link href="{base}/feed.xml" rel="self" type="application/rss+xml"/>',
            "<description>News, launches and practice-growth insights from AscendPoint Agency.</description>",
            "<language>en-us</language>", f"<lastBuildDate>{now}</lastBuildDate>"]
@@ -309,7 +309,7 @@ def write_feed(pages, base):
         out.append("<item>"
                    f"<title>{html.escape(html.unescape(p.get('name')))}</title><link>{base}{p.url}</link>"
                    f'<guid isPermaLink="true">{base}{p.url}</guid><pubDate>{format_datetime(d)}</pubDate>'
-                   f"<category>{'News' if p.type == 'news' else 'Insights'}</category>"
+                   f"<category>{'News' if p.type == 'news' else 'Blog'}</category>"
                    f"<description>{html.escape(p.get('description'))}</description></item>")
     out.append("</channel></rss>")
     (DIST / "feed.xml").write_text("\n".join(out) + "\n")
@@ -331,7 +331,7 @@ def write_llms(pages, base):
            "## Company", *[row(p) for p in sorted(core, key=lambda p: p.url)], "",
            "## Capabilities", *[row(p) for p in by("service")], "",
            "## News", *[row(p) for p in sorted(by("news"), key=lambda p: p.date, reverse=True)], "",
-           "## Insights", *[row(p) for p in sorted(by("post"), key=lambda p: p.date, reverse=True)], ""]
+           "## Blog", *[row(p) for p in sorted(by("post"), key=lambda p: p.date, reverse=True)], ""]
     (DIST / "llms.txt").write_text("\n".join(txt))
 
 
