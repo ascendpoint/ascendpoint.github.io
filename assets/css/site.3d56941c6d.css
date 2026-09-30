@@ -366,3 +366,12 @@ a.post:hover .thumb img{transform:scale(1.04)}
 .foot-legal{display:flex;gap:18px;flex-wrap:wrap}
 .foot-legal a{color:var(--gray)}
 .foot-legal a:hover{color:var(--sky)}
+
+/* announcement bar (above the sticky header) */
+.announce{display:flex;align-items:center;justify-content:center;gap:12px;flex-wrap:wrap;background:var(--sky);color:var(--prussian);font:500 15px/1.35 var(--text);padding:10px clamp(16px,5.5vw,80px);text-align:center}
+.announce:hover{background:var(--sky-hover);color:var(--prussian)}
+.announce strong{font-weight:700}
+.announce-tag{font:700 11px/1 var(--display);letter-spacing:.16em;text-transform:uppercase;background:var(--prussian);color:var(--white);padding:6px 10px;border-radius:999px}
+.announce-cta{font:700 14px/1 var(--display);text-decoration:underline;text-underline-offset:3px}
+@media (max-width:640px){.announce{font-size:14px;gap:8px}.announce-cta{display:none}}
+.foot-btn{align-self:flex-start;min-height:46px;padding:0 22px;font-size:14px;margin-top:6px}

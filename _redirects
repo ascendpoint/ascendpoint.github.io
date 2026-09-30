@@ -9,6 +9,7 @@
 # strategy-session funnel pages).
 
 # --- www -> apex (only takes effect once www.ascendpoint.agency is attached) ---
+https://www.ascendpoint.agency/  https://ascendpoint.agency/  301!
 https://www.ascendpoint.agency/*  https://ascendpoint.agency/:splat  301!
 
 # --- Old WordPress pages that no longer exist ---
@@ -16,6 +17,8 @@ https://www.ascendpoint.agency/*  https://ascendpoint.agency/:splat  301!
 /home  /  301
 /other-industries/  /capabilities/  301
 /other-industries  /capabilities/  301
+/legal-marketing/  /capabilities/  301
+/legal-marketing  /capabilities/  301
 /legal-marketing/*  /capabilities/  301
 /solutions/healthcare-seo/  /capabilities/healthcare-seo-ai-ranking/  301
 /solutions/healthcare-seo  /capabilities/healthcare-seo-ai-ranking/  301
@@ -28,17 +31,37 @@ https://www.ascendpoint.agency/*  https://ascendpoint.agency/:splat  301!
 /event-2  /capabilities/healthcare-webinars-events/  301
 /event-3/  /capabilities/healthcare-webinars-events/  301
 /event-3  /capabilities/healthcare-webinars-events/  301
+/category/news/  /news/  301
+/category/news  /news/  301
 /category/news/*  /news/  301
+/category/events/  /capabilities/healthcare-webinars-events/  301
+/category/events  /capabilities/healthcare-webinars-events/  301
 /category/events/*  /capabilities/healthcare-webinars-events/  301
+/category/  /blog/  301
+/category  /blog/  301
 /category/*  /blog/  301
+/blog/page/  /blog/  301
+/blog/page  /blog/  301
 /blog/page/*  /blog/  301
+/page/  /blog/  301
+/page  /blog/  301
 /page/*  /blog/  301
+/author/  /about/  301
+/author  /about/  301
 /author/*  /about/  301
+/tag/  /blog/  301
+/tag  /blog/  301
 /tag/*  /blog/  301
+/project/  /  301
+/project  /  301
 /project/*  /  301
 
 # --- WordPress system URLs ---
+/feed/  /feed.xml  301
+/feed  /feed.xml  301
 /feed/*  /feed.xml  301
+/comments/feed/  /feed.xml  301
+/comments/feed  /feed.xml  301
 /comments/feed/*  /feed.xml  301
 /sitemap_index.xml  /sitemap.xml  301
 /sitemaps.xml  /sitemap.xml  301
@@ -49,6 +72,8 @@ https://www.ascendpoint.agency/*  https://ascendpoint.agency/:splat  301!
 /category-sitemap.xml  /sitemap.xml  301
 /category-sitemap1.xml  /sitemap.xml  301
 /wp-sitemap.xml  /sitemap.xml  301
+/wp-admin/  /  302
+/wp-admin  /  302
 /wp-admin/*  /  302
 /wp-login.php  /  302
 
