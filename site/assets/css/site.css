@@ -358,6 +358,18 @@ a.post:hover .thumb img{transform:scale(1.04)}
 .article blockquote.pull p{margin:0}
 .article blockquote.pull cite{display:block;margin-top:12px;font:600 14px/1.4 var(--display);font-style:normal;color:var(--muted);letter-spacing:.02em}
 .draft-flag{display:inline-block;margin-top:10px;font:700 10px/1 var(--display);letter-spacing:.14em;text-transform:uppercase;background:var(--dun);color:var(--lion);padding:6px 10px;border-radius:999px}
+.article .inline-photo{float:left;width:30%;margin:.35em 28px 14px 0}
+.article .inline-photo.mid{width:36%}
+.article .inline-photo.wide{width:45%}
+.article .inline-photo.right{float:right;margin:.35em 0 14px 28px}
+.article .inline-photo img{display:block;width:100%;height:auto;border-radius:12px;background:var(--tint,#eef3f7)}
+.article .inline-photo.mid img{aspect-ratio:4/5;object-fit:cover;object-position:50% 35%}
+.article .inline-photo figcaption{margin-top:8px;font:600 13px/1.4 var(--display);color:var(--muted)}
+.article h2,.article .boiler{clear:both}
+.article .inline-photo + blockquote.pull,.article .inline-photo + p{overflow:hidden;margin-top:.35em}
+@media (max-width:640px){.article .inline-photo,.article .inline-photo.mid,.article .inline-photo.wide,.article .inline-photo.right{float:none;width:100%;margin:1.4em 0}}
+sup.tm{font-size:.62em;vertical-align:.5em;line-height:0;margin-left:.03em}
+.related-2{max-width:900px}
 .article .boiler{margin-top:2.4em;padding-top:1.6em;border-top:1px solid var(--border);font-size:17px}
 .related .post time{font-size:14px}
 .gallery-note{font-size:14px;color:var(--muted);margin-top:14px}
