@@ -258,6 +258,8 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .thanks{background:var(--tint);border-radius:16px;padding:clamp(28px,4vw,56px);display:flex;flex-direction:column;gap:16px;align-items:flex-start}
 .info{display:flex;gap:14px;align-items:flex-start;font-size:17px;font-weight:400}
 .info svg{color:var(--deep);flex-shrink:0;margin-top:3px}
+.info a{color:inherit;text-decoration:underline;text-decoration-color:var(--border);text-underline-offset:4px}
+.info a:hover{text-decoration-color:currentColor}
 
 /* capability pages */
 .inc{display:flex;gap:14px;align-items:flex-start;background:var(--white);border:1px solid var(--border);border-radius:14px;padding:22px 24px;font-size:17px;font-weight:400;line-height:1.4}
