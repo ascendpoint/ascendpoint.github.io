@@ -349,7 +349,6 @@ a.post:hover .thumb img{transform:scale(1.04)}
 .article blockquote.pull{margin:1.6em 0;padding:4px 0 4px 24px;border-left:3px solid var(--sky);color:var(--prussian);font-size:21px;line-height:1.55}
 .article blockquote.pull p{margin:0}
 .article blockquote.pull cite{display:block;margin-top:12px;font:600 14px/1.4 var(--display);font-style:normal;color:var(--muted);letter-spacing:.02em}
-.draft-flag{display:inline-block;margin-top:10px;font:700 10px/1 var(--display);letter-spacing:.14em;text-transform:uppercase;background:var(--dun);color:var(--lion);padding:6px 10px;border-radius:999px}
 .article .inline-photo{float:left;width:30%;margin:.35em 28px 14px 0}
 .article .inline-photo.mid{width:36%}
 .article .inline-photo.wide{width:45%}
