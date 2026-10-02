@@ -231,6 +231,38 @@ class WaitLiveTests(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class ModelRoutingTests(unittest.TestCase):
+    def pick(self, text, context=None, env=None):
+        with mock.patch.dict(os.environ, env or {}, clear=False):
+            for k in ("CLAUDE_MODEL", "CLAUDE_MODEL_ADVANCED"):
+                if not env or k not in env:
+                    os.environ.pop(k, None)
+            return wr.choose_model({"text": text, "context": context or []})
+
+    def test_simple_edits_use_sonnet(self):
+        for t in ["Change the headline to 'Hello'", "Fix the typo on About", "Remove Kat from the team",
+                  "Hey these two sections on the homepage need to get removed", "Update the phone number"]:
+            self.assertEqual(self.pick(t), ("sonnet", "standard"), t)
+
+    def test_design_and_motion_use_opus(self):
+        for t in ["Add some movement to the homepage hero", "Can the stats count up when you scroll to them?",
+                  "Make the brand cards fade in on scroll", "Build a new page for our webinar",
+                  "Add a testimonial carousel", "Redesign the contact page layout", "Add hover effects to the cards"]:
+            self.assertEqual(self.pick(t), ("opus", "advanced"), t)
+
+    def test_overrides(self):
+        self.assertEqual(self.pick("[opus] change the headline"), ("opus", "advanced"))
+        self.assertEqual(self.pick("try harder"), ("opus", "advanced"))
+        self.assertEqual(self.pick("[sonnet] add a carousel"), ("sonnet", "standard"))
+        # a follow-up in an advanced thread stays advanced
+        self.assertEqual(self.pick("make it a bit slower", ["Kyle: add a parallax effect to the hero"]),
+                         ("opus", "advanced"))
+
+    def test_env_models(self):
+        self.assertEqual(self.pick("add a carousel", env={"CLAUDE_MODEL_ADVANCED": "claude-opus-x"})[0], "claude-opus-x")
+        self.assertEqual(self.pick("fix a typo", env={"CLAUDE_MODEL": "haiku"})[0], "haiku")
+
+
 class UrlTests(unittest.TestCase):
     def test_url_for(self):
         self.assertEqual(wr.url_for("site/pages/index.html"), "/")
@@ -356,6 +388,46 @@ print(json.dumps({{"result": "nothing to do", "total_cost_usd": 0.01}}))
         env = json.loads(out.read_text())
         self.assertEqual(env.get("ANTHROPIC_CUSTOM_HEADERS"), "anthropic-workspace-id: wrkspc_TEST")
         self.assertNotIn("SLACK_BOT_TOKEN", env)          # secrets never reach Claude
+
+    def test_failing_check_is_auto_fixed_by_advanced_model(self):
+        result = self.tmp / "result.json"
+        calls = self.tmp / "calls.txt"
+        self.fake_claude(f"""
+import json, pathlib, sys
+args = sys.argv[1:]
+model = args[args.index("--model") + 1]
+prompt = args[args.index("-p") + 1]
+pathlib.Path('{calls}').open("a").write(model + "\\n")
+p = pathlib.Path('site/pages/about.html'); s = p.read_text()
+if "FAILED the site's quality checks" in prompt:
+    s = s.replace('<a href="/no-such-page/">broken</a>', '<a href="/contact/">Contact us</a>')
+    summary = "Added a contact link to the About page."
+else:
+    s = s.replace('</section>', '<a href="/no-such-page/">broken</a></section>', 1)
+    summary = "Added a link."
+p.write_text(s)
+pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary": summary, "pages": ["/about/"]}}))
+print(json.dumps({{"result": "ok", "total_cost_usd": 0.10}}))
+""")
+        reaction, text = wr.handle(self.req("Add a contact link to About"), FakeSlack([]), "https://ascendpoint.agency")
+        self.assertEqual(reaction, "white_check_mark", text)
+        self.assertEqual(calls.read_text().split(), ["sonnet", "opus"])
+        self.assertIn("auto-fixed", text)
+        self.assertIn("$0.20", text)
+        self.assertIn("Added a contact link", text)
+        self.assertEqual(self.shipped, ["Added a contact link to the About page."])
+
+    def test_reply_names_the_model(self):
+        result = self.tmp / "result.json"
+        self.fake_claude(f"""
+import json, pathlib
+p = pathlib.Path('site/pages/about.html'); p.write_text(p.read_text().replace('Building the leading', 'Building the best', 1))
+pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary": "Animated the About hero."}}))
+print(json.dumps({{"result": "done", "total_cost_usd": 1.5}}))
+""")
+        reaction, text = wr.handle(self.req("Add a subtle fade-in animation to the About hero"), FakeSlack([]), "https://x")
+        self.assertEqual(reaction, "white_check_mark", text)
+        self.assertIn("Claude Opus (advanced request)", text)
 
     def test_edits_outside_site_are_dropped(self):
         result = self.tmp / "result.json"

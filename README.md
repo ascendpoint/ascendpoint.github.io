@@ -32,6 +32,16 @@ What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 
 Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
 
+**Two models, picked per request.** Everyday edits (text, links, photos, removing things) use Claude Sonnet:
+fast and cheap (typically 20-60 s of work, $0.05-0.30). Design, motion and interactive work (animation,
+"movement", on-scroll effects, hover effects, carousels, new pages or sections, layout/redesign, forms) uses
+Claude Opus with a higher cap. A follow-up in that thread stays on Opus. Force it either way by writing
+`[opus]`, "use the best model" or "try harder" (or `[sonnet]`) in the message. If a change fails the site
+checks, Opus gets one automatic repair pass with the exact errors before anything is reported as failed.
+For anything visual the robot builds the site and screenshots it on desktop and mobile
+(`tools/screenshot.py`, headless Chromium; frames over time for animation, hover and on-scroll states) and
+must look at the result before it publishes. The ✅ reply names the model used and the cost.
+
 How it works: `.github/workflows/website-requests.yml` keeps one listener running in GitHub Actions
 (polls Slack every 10 s for ~5.7 h; cron restarts it every 15 min; free on a public repo; no one's
 computer needs to be on). Email lands in the channel instantly, so it is picked up the same way and `tools/website_requests.py` does the work: Claude Code in
@@ -48,7 +58,8 @@ Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`
 `users:read`, `files:read`; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
 (comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
-to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3),
+to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3), `CLAUDE_MODEL_ADVANCED` (default `opus`),
+`CLAUDE_MAX_USD_ADVANCED` (default 10),
 `ANTHROPIC_WORKSPACE_ID` (Claude Console workspace to bill; required when the API key is organization-level,
 not created inside a workspace: Oct 2 2026 = Default workspace wrkspc_01AphpFe2Yxf9FqUWDUssPN6 of the
 Claude Console org Kyle created for the robot), `WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,

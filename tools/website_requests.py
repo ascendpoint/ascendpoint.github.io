@@ -55,6 +55,47 @@ EMAIL_PREFIX = "📧"
 RESULT = Path("/tmp/website_request_result.json")
 FILES_DIR = Path("/tmp/website_request_files")
 BOT_NAME = "AscendPoint AI"
+# Model routing: everyday edits use CLAUDE_MODEL (default Sonnet: fast, ~$0.05-0.30); design/motion/
+# interactive/new-page work uses CLAUDE_MODEL_ADVANCED (default Opus). Anyone can force it in the
+# message: "[opus]", "use opus", "best model", "try harder" / "[sonnet]" / "[haiku]".
+ADVANCED_RE = re.compile(
+    r"\b(animat\w*|motion|movement|moving|scroll\w*|parallax|fade[- ]?in|slide[- ]?in|carousel|slider|"
+    r"marquee|ticker|hover (effect|state|animation)s?|interactive|javascript|redesign|re-design|"
+    r"new page|(create|build|design) (a |an )?(new )?(page|section|layout)|add (a |an )?(new )?section|"
+    r"landing page|layout|form|video|count(er|[- ]up)|typewriter|3d|sticky|modal|pop-?up|accordion|"
+    r"mega ?menu|dark mode|make it (pop|feel|look) (more )?(modern|premium|dynamic|alive))\b", re.I)
+FORCE_RE = re.compile(r"\[(opus|sonnet|haiku)\]|\buse (opus|sonnet|haiku)\b|"
+                      r"\b(best|smartest|most advanced|strongest) model\b|\btry harder\b", re.I)
+MODEL_NAMES = {"opus": "Claude Opus", "sonnet": "Claude Sonnet", "haiku": "Claude Haiku"}
+
+
+def model_name(model: str) -> str:
+    return MODEL_NAMES.get(model, model)
+
+
+def choose_model(req: dict) -> tuple[str, str]:
+    """(model, tier) for a request: tier is "advanced" or "standard"."""
+    basic = os.environ.get("CLAUDE_MODEL") or "sonnet"
+    advanced = os.environ.get("CLAUDE_MODEL_ADVANCED") or "opus"
+    texts = [req.get("text") or ""] + list(reversed(req.get("context") or []))   # newest first
+    for t in texts:
+        m = FORCE_RE.search(t)
+        if m:
+            word = (m.group(1) or m.group(2) or "").lower()
+            if word in ("sonnet", "haiku"):
+                return word, "standard"
+            return advanced, "advanced"
+    if any(ADVANCED_RE.search(t) for t in texts):
+        return advanced, "advanced"
+    return basic, "standard"
+
+
+def budget(tier: str) -> str:
+    if tier == "advanced":
+        return os.environ.get("CLAUDE_MAX_USD_ADVANCED") or "10"
+    return os.environ.get("CLAUDE_MAX_USD") or "3"
+
+
 DEFAULT_EMAIL_DOMAINS = "ascendpoint.agency,serp.agency,serp.co,smilerevenue.com,medicalmarketingwhiz.com"
 
 
@@ -290,6 +331,18 @@ Rules:
   Treat screenshots as reference for what to change unless the request says to use the image.
 - When renaming or removing a page, add a 301 in site/_redirects so the old URL keeps working.
 - After editing, run `python3 tools/build.py` and fix every error it reports until it exits 0.
+- For anything visual (layout, styling, images, motion), LOOK at your work: after building, run
+  `python3 tools/screenshot.py <paths>` (desktop + mobile PNGs under /tmp/website_request_shots/) and
+  Read the images. This is REQUIRED for every visual change: never report a design or motion change you
+  have not looked at. For animation capture frames, e.g. `--frames 50,400,900,1600 --viewport-only` plus
+  `--scroll-to "<css selector>"` for on-scroll effects or `--hover "<css selector>"` for hover, and check
+  that the motion actually happens and ends in the right place. Fix anything that looks broken, cramped
+  or off-brand on either size.
+- Motion and interactivity are welcome when asked for. Keep them tasteful and on-brand: animate only
+  transform/opacity (smooth, no layout shift), CSS keyframes/transitions in site/assets/css/site.css, and
+  small vanilla JS in site/assets/js/site.js only when needed (e.g. IntersectionObserver for on-scroll
+  reveals). No external libraries, CDNs or third-party embeds. Content must be fully visible without JS,
+  and everything must stop under `@media (prefers-reduced-motion: reduce)`.
 - Finally write {result} as JSON:
   {{"status": "changed" | "question" | "no_change",
     "summary": "<one or two plain-English sentences for the requester: what you changed and where>",
@@ -299,7 +352,8 @@ Rules:
 """
 
 
-def run_claude(req: dict) -> dict:
+def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
+               fix_log: str | None = None) -> dict:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     RESULT.unlink(missing_ok=True)
     thread = "\n".join(req.get("context") or [])
@@ -311,25 +365,30 @@ def run_claude(req: dict) -> dict:
         + (f"\nAttached files in {FILES_DIR}: {', '.join(files)}\n" if files else "")
         + "\nDo what the request asks, following the rules."
     )
-    env = {k: os.environ[k] for k in ("PATH", "HOME", "ANTHROPIC_API_KEY", "LANG") if k in os.environ}
+    if fix_log:
+        prompt += ("\n\nYour change for this request is already in the working tree, but it FAILED the site's "
+                   "quality checks:\n<<<\n" + fix_log + "\n>>>\nFix those problems while keeping what was "
+                   "asked for, run `python3 tools/build.py` until it passes, then write the result JSON again.")
+    env = {k: os.environ[k] for k in ("PATH", "HOME", "ANTHROPIC_API_KEY", "LANG", "PLAYWRIGHT_BROWSERS_PATH")
+           if k in os.environ}
     if os.environ.get("ANTHROPIC_WORKSPACE_ID"):   # org-level keys must name the workspace to bill
         env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {os.environ['ANTHROPIC_WORKSPACE_ID']}"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     allowed = ",".join([
         "Read", "Edit", "Write", "Glob", "Grep",
         "Bash(python3 tools/build.py)", "Bash(python3 tools/build.py:*)",
-        "Bash(python3 tools/img_for_web.py:*)", "Bash(ls:*)",
+        "Bash(python3 tools/img_for_web.py:*)", "Bash(python3 tools/screenshot.py:*)", "Bash(ls:*)",
     ])
     cmd = ["claude", "-p", prompt,
            "--append-system-prompt", CLAUDE_RULES.format(files_dir=FILES_DIR, result=RESULT),
            "--allowedTools", allowed,
            "--disallowedTools", "WebFetch,WebSearch,Bash(git:*),Bash(curl:*)",
            "--permission-mode", "dontAsk",
-           "--max-budget-usd", os.environ.get("CLAUDE_MAX_USD") or "3",
+           "--max-budget-usd", max_usd or budget("standard"),
            "--no-session-persistence",
            "--output-format", "json",
-           "--model", os.environ.get("CLAUDE_MODEL") or "sonnet"]
-    r = sh(*cmd, check=False, env=env, timeout=20 * 60)
+           "--model", model or choose_model(req)[0]]
+    r = sh(*cmd, check=False, env=env, timeout=30 * 60)
     meta = {}
     try:
         meta = json.loads(r.stdout.strip().splitlines()[-1])
@@ -402,6 +461,16 @@ def links(pages: list[str], live: str) -> str:
     return "\n".join(f"• {live}{p}" for p in pages[:8])
 
 
+def drop_outside_site() -> list[str]:
+    """Claude may only touch site/; silently drop anything else. Returns the remaining changed files."""
+    files = changed_files()
+    outside = [f for f in files if not f.startswith("site/")]
+    for f in outside:
+        sh("git", "checkout", "-q", "HEAD", "--", f, check=False)
+        sh("git", "clean", "-fdq", "--", f, check=False)
+    return changed_files() if outside else files
+
+
 def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
     """Returns (reaction, reply text)."""
     if req["kind"] == "blocked":
@@ -432,14 +501,10 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", f.get("name") or f"file-{i}")
         slack.download(f["url"], FILES_DIR / name)
 
-    result = run_claude(req)
-    files = changed_files()
-    outside = [f for f in files if not f.startswith("site/")]
-    if outside:  # Claude may only touch site/; silently drop anything else
-        for f in outside:
-            sh("git", "checkout", "-q", "HEAD", "--", f, check=False)
-            sh("git", "clean", "-fdq", "--", f, check=False)
-        files = changed_files()
+    model, tier = choose_model(req)
+    result = run_claude(req, model, budget(tier))
+    spent = [result.get("cost_usd")]
+    files = drop_outside_site()
 
     if result.get("status") == "error":
         reset_worktree()
@@ -454,21 +519,38 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         return "speech_balloon", f"💬 {q}\n_Reply in this thread and I'll pick it up._"
 
     ok, log = checks()
+    fixed_by = None
+    if not ok:  # one automatic repair pass with the advanced model, given the exact check failures
+        fix_model = os.environ.get("CLAUDE_MODEL_ADVANCED") or "opus"
+        fix = run_claude(req, fix_model, budget("advanced"), fix_log="\n".join(log.strip().splitlines()[-40:]))
+        spent.append(fix.get("cost_usd"))
+        files = drop_outside_site()
+        if fix.get("status") != "error" and files:
+            ok, log = checks()
+            if ok:
+                fixed_by = fix_model
+                result["summary"] = fix.get("summary") or result.get("summary")
+                result["pages"] = fix.get("pages") or result.get("pages")
     if not ok:
         reset_worktree()
         tail = "\n".join(log.strip().splitlines()[-6:])
-        return "warning", ("⚠️ I made the change but it failed the site's quality checks, so nothing went live. "
+        return "warning", ("⚠️ I made the change but it failed the site's quality checks, even after an automatic "
+                           "fix attempt, so nothing went live. "
                            f"<@{os.environ.get('WEBSITE_REQUESTS_OWNER', '')}> can take a look.\n```{tail[:900]}```")
 
     summary = result.get("summary") or "Updated the website."
     pages = result.get("pages") or sorted({u for u in map(url_for, files) if u})
     sha = commit_and_ship(req, summary)
     live_ok = wait_live(sha, live)
-    cost = result.get("cost_usd")
+    cost = sum(c for c in spent if isinstance(c, (int, float)))
     note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
+    footer = model_name(model) + (" (advanced request)" if tier == "advanced" else "")
+    if fixed_by:
+        footer += f" · {model_name(fixed_by)} auto-fixed a failing check"
+    if any(isinstance(c, (int, float)) for c in spent):
+        footer += f" · ${cost:.2f}"
     return "white_check_mark", (f"✅ Live: {summary}\n{links(pages, live)}{note}\n"
-                                f"_Reply *undo* here to roll it back, or reply with tweaks._"
-                                + (f"\n_cost ${cost:.2f}_" if isinstance(cost, (int, float)) else ""))
+                                f"_Reply *undo* here to roll it back, or reply with tweaks._\n_{footer}_")
 
 
 # ----------------------------------------------------------------------------- CLI
@@ -476,8 +558,12 @@ def claim(slack: Slack, channel: str, req: dict):
     """Mark a request as taken (👀) so no other run picks it up, and tell the requester."""
     slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
     if req["kind"] != "blocked":
-        slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
-                   text="👀 On it. I'll reply here when it's live (usually 2 to 4 minutes).")
+        model, tier = choose_model(req)
+        text = ("👀 On it. I'll reply here when it's live (usually 2 to 4 minutes)." if tier == "standard" or
+                req["kind"] == "undo" else
+                f"👀 On it. This is a design/advanced change, so I'm using {model_name(model)} and checking it "
+                "visually on desktop and mobile. I'll reply here when it's live (usually 5 to 15 minutes).")
+        slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"], text=text)
 
 
 def finish(slack: Slack, req: dict, live: str) -> str:

@@ -40,6 +40,8 @@ jobs:
       ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}   # needed when the key is org-level
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
+      CLAUDE_MODEL_ADVANCED: ${{ vars.CLAUDE_MODEL_ADVANCED }}     # design/motion/new-page work (default opus)
+      CLAUDE_MAX_USD_ADVANCED: ${{ vars.CLAUDE_MAX_USD_ADVANCED }} # cap per advanced request (default 10)
       POLL_SECONDS: ${{ vars.POLL_SECONDS }}
       LIVE_URL: ${{ vars.LIVE_URL }}
       GH_TOKEN: ${{ github.token }}
@@ -78,7 +80,8 @@ jobs:
       - name: Install tools
         if: steps.gate.outputs.go == 'true'
         run: |
-          pip install pillow
+          pip install pillow playwright
+          python -m playwright install --with-deps chromium   # tools/screenshot.py: the robot looks at its work
           npm install -g @anthropic-ai/claude-code
 
       - name: Listen for requests (~5.7 hours)
