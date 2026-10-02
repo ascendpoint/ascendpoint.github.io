@@ -295,6 +295,33 @@ pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary":
         self.assertEqual(self.shipped, [])
         self.assertEqual(wr.changed_files(), [])
 
+    def test_claude_failure_is_a_warning_not_a_question(self):
+        self.fake_claude("""
+import json, sys
+print(json.dumps({"is_error": True, "result": "API Error: 400 This API key is not scoped to a workspace"}))
+sys.exit(1)
+""")
+        with mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_OWNER": "UKYLE"}):
+            reaction, text = wr.handle(self.req(), FakeSlack([]), "https://x")
+        self.assertEqual(reaction, "warning")
+        self.assertIn("couldn't reach Claude", text)
+        self.assertIn("<@UKYLE>", text)
+        self.assertIn("not scoped", text)
+        self.assertEqual(self.shipped, [])
+
+    def test_workspace_id_is_sent_as_a_header(self):
+        out = self.tmp / "env.json"
+        self.fake_claude(f"""
+import json, os, pathlib
+pathlib.Path('{out}').write_text(json.dumps(dict(os.environ)))
+print(json.dumps({{"result": "nothing to do", "total_cost_usd": 0.01}}))
+""")
+        with mock.patch.dict(os.environ, {"ANTHROPIC_WORKSPACE_ID": "wrkspc_TEST"}):
+            wr.handle(self.req(), FakeSlack([]), "https://x")
+        env = json.loads(out.read_text())
+        self.assertEqual(env.get("ANTHROPIC_CUSTOM_HEADERS"), "anthropic-workspace-id: wrkspc_TEST")
+        self.assertNotIn("SLACK_BOT_TOKEN", env)          # secrets never reach Claude
+
     def test_edits_outside_site_are_dropped(self):
         result = self.tmp / "result.json"
         self.fake_claude(f"""

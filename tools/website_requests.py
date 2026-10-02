@@ -278,6 +278,7 @@ How the site works: read README.md first (front matter, where pages live, brand 
 site/pages/<url>.html; the layout is site/_layout/; styles site/assets/css/site.css; images site/img/.
 
 Rules:
+- If the message just says "retry" / "try again", carry out the earlier request in the thread.
 - Make the smallest correct change that does exactly what was asked, matching the existing design,
   tone and HTML patterns. Keep titles <= 60 chars and descriptions 70-170 chars when you touch them.
 - Never invent facts: no made-up numbers, prices, dates, quotes, names, credentials or claims. If the
@@ -311,6 +312,8 @@ def run_claude(req: dict) -> dict:
         + "\nDo what the request asks, following the rules."
     )
     env = {k: os.environ[k] for k in ("PATH", "HOME", "ANTHROPIC_API_KEY", "LANG") if k in os.environ}
+    if os.environ.get("ANTHROPIC_WORKSPACE_ID"):   # org-level keys must name the workspace to bill
+        env["ANTHROPIC_CUSTOM_HEADERS"] = f"anthropic-workspace-id: {os.environ['ANTHROPIC_WORKSPACE_ID']}"
     env["CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"] = "1"
     allowed = ",".join([
         "Read", "Edit", "Write", "Glob", "Grep",
@@ -342,6 +345,9 @@ def run_claude(req: dict) -> dict:
     result.setdefault("summary", (meta.get("result") or "").strip()[:600])
     result["cost_usd"] = meta.get("total_cost_usd")
     result["claude_exit"] = r.returncode
+    if (meta.get("is_error") or r.returncode != 0) and not RESULT.exists():
+        result["status"] = "error"     # Claude itself failed (API key, credits, outage...): not a question
+        result["error"] = (meta.get("result") or r.stdout or "")[-500:].strip()
     return result
 
 
@@ -425,6 +431,13 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
             sh("git", "checkout", "-q", "HEAD", "--", f, check=False)
             sh("git", "clean", "-fdq", "--", f, check=False)
         files = changed_files()
+
+    if result.get("status") == "error":
+        reset_worktree()
+        owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
+        return "warning", ("⚠️ I couldn't reach Claude, so nothing was changed. "
+                           f"{f'<@{owner}> ' if owner else ''}has been flagged; once it's fixed, "
+                           f"reply *retry* here.\n`{result.get('error', '')[:300]}`")
 
     if result.get("status") == "question" or not files:
         reset_worktree()

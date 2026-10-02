@@ -49,7 +49,9 @@ Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
 (comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
 to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3),
-`WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,
+`ANTHROPIC_WORKSPACE_ID` (Claude Console workspace to bill; required when the API key is organization-level,
+not created inside a workspace: Oct 2 2026 = Default workspace wrkspc_01AphpFe2Yxf9FqUWDUssPN6 of the
+Claude Console org Kyle created for the robot), `WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,
 serp.agency, serp.co, smilerevenue.com, medicalmarketingwhiz.com).
 
 Current setup (Oct 2 2026): Slack workspace AscendPoint Agency, channel **#website-requests**
