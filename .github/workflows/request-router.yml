@@ -1,0 +1,63 @@
+name: Request router (Slack -> other sites' robots)
+
+# Watches OTHER sites' website-request channels and wakes those sites' own robots. It never edits
+# this site or any other: for each new request it reacts 📥 and sends a repository_dispatch to the
+# site's repo (e.g. ascendpoint/serpdental-site for #serpdental-website-requests), where that site's
+# robot does the work with a token that can only push to that repo. See tools/request_router.py.
+#
+# Lives here because this repo is public, so an always-on job costs nothing (the site repos are
+# private). Same pattern as website-requests.yml: one ~5.7 h listener, restarted every 15 minutes.
+#
+# Needs: secrets SLACK_BOT_TOKEN (already set) + SERPDENTAL_DISPATCH_TOKEN (fine-grained token,
+# ascendpoint/serpdental-site, Contents: read and write); variables ROUTES (channel=owner/repo, comma-
+# separated) and ROUTER_START (unix time; ignore older messages).
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  route:
+    runs-on: ubuntu-latest
+    timeout-minutes: 355
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      DISPATCH_TOKEN: ${{ secrets.SERPDENTAL_DISPATCH_TOKEN }}
+      ROUTES: ${{ vars.ROUTES }}
+      ROUTER_START: ${{ vars.ROUTER_START }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - name: Only one router at a time
+        id: gate
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$DISPATCH_TOKEN" ] || [ -z "$ROUTES" ]; then
+            echo "Not configured yet (SLACK_BOT_TOKEN / SERPDENTAL_DISPATCH_TOKEN / ROUTES); nothing to do."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          older=$(gh api "repos/${{ github.repository }}/actions/workflows/request-router.yml/runs?status=in_progress&per_page=20" \
+            --jq "[.workflow_runs[] | select(.id < ${{ github.run_id }})] | length")
+          if [ "${older:-0}" -gt 0 ]; then
+            echo "A router is already running; exiting."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
+
+      - uses: actions/setup-python@v5
+        if: steps.gate.outputs.go == 'true'
+        with:
+          python-version: "3.12"
+
+      - name: Route requests (~5.7 hours)
+        if: steps.gate.outputs.go == 'true'
+        env:
+          LISTEN_MINUTES: "340"
+        run: python3 tools/request_router.py listen
