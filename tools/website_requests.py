@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """AscendPoint AI website robot: turns Slack requests into live site changes.
 
-Runs in GitHub Actions (.github/workflows/website-requests.yml) every 5 minutes:
+Runs in GitHub Actions (.github/workflows/website-requests.yml). A listener job is always running
+(restarted every 15 minutes if it isn't), so a request is picked up within ~10 seconds:
 
-    python3 tools/website_requests.py next   # find the oldest unhandled request -> request.json
+    python3 tools/website_requests.py listen   # near-instant: poll every 10 s for ~5.7 h (default)
+    python3 tools/website_requests.py next     # one-shot: find the oldest unhandled request -> request.json
     python3 tools/website_requests.py run request.json
 
 Front doors (both land in the Slack channel, which is the single queue):
@@ -120,27 +122,44 @@ def is_request(msg: dict, bot_user: str, bot_id: str | None) -> bool:
 
 
 def find_next(slack: Slack, channel: str, now: float | None = None,
-              start: float = 0.0, allowed: set[str] | None = None) -> dict | None:
-    """Oldest unhandled request: a top-level message, or a reply in a thread the bot is in."""
+              start: float = 0.0, allowed: set[str] | None = None,
+              cache: dict | None = None) -> dict | None:
+    """Oldest unhandled request: a top-level message, or a reply in a thread the bot is in.
+
+    `cache` (used by `listen`) remembers each thread's latest reply and the bot's identity,
+    so quiet threads aren't re-read on every poll."""
     now = now or time.time()
     oldest = max(start, now - MAX_AGE)
-    auth = slack.call("auth.test")
+    if cache is not None and "auth" in cache:
+        auth = cache["auth"]
+    else:
+        auth = slack.call("auth.test")
+        if cache is not None:
+            cache["auth"] = auth
     bot_user, bot_id = auth["user_id"], auth.get("bot_id")
+    quiet = cache.setdefault("quiet", {}) if cache is not None else {}
     hist = slack.call("conversations.history", channel=channel, oldest=f"{oldest:.6f}", limit=200)
     candidates = []
     for m in hist.get("messages", []):
         if is_request(m, bot_user, bot_id) and not is_handled(m, bot_user):
             candidates.append((m, None))
         if m.get("reply_count"):
+            marker = m.get("latest_reply") or str(m.get("reply_count"))
+            if quiet.get(m["ts"]) == marker:
+                continue                  # nothing new in this thread since it was last read
             rep = slack.call("conversations.replies", channel=channel, ts=m["ts"], limit=200)
             thread = rep.get("messages", [])
             bot_in_thread = any(x.get("user") == bot_user for x in thread)
+            found = False
             for r in thread[1:]:
                 r.setdefault("thread_ts", m["ts"])
                 if float(r["ts"]) < oldest or not bot_in_thread:
                     continue
                 if is_request(r, bot_user, bot_id) and not is_handled(r, bot_user):
                     candidates.append((r, thread))
+                    found = True
+            if not found:
+                quiet[m["ts"]] = marker
     if allowed:
         candidates = [c for c in candidates
                       if c[0].get("user") in allowed or email_file(c[0])
@@ -431,6 +450,61 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
 
 
 # ----------------------------------------------------------------------------- CLI
+def claim(slack: Slack, channel: str, req: dict):
+    """Mark a request as taken (👀) so no other run picks it up, and tell the requester."""
+    slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
+    if req["kind"] != "blocked":
+        slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
+                   text="👀 On it. I'll reply here when it's live (usually 3 to 6 minutes).")
+
+
+def finish(slack: Slack, req: dict, live: str) -> str:
+    """Do the request, reply in the thread, swap 👀 for the outcome reaction."""
+    try:
+        reaction, text = handle(req, slack, live)
+    except Exception as e:  # never leave a request silently hanging
+        reset_worktree()
+        owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
+        reaction, text = "warning", (f"⚠️ Something went wrong and nothing was changed. "
+                                     f"{f'<@{owner}> ' if owner else ''}has been flagged.\n`{str(e)[:300]}`")
+        print("ERROR", e, file=sys.stderr)
+    slack.call("chat.postMessage", channel=req["channel"], thread_ts=req["thread_ts"], text=text,
+               unfurl_links="false")
+    slack.call("reactions.remove", channel=req["channel"], timestamp=req["ts"], name="eyes")
+    slack.call("reactions.add", channel=req["channel"], timestamp=req["ts"], name=reaction)
+    print(reaction, text, flush=True)
+    return reaction
+
+
+def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
+           start: float = 0.0, allowed: set[str] | None = None, sleep=time.sleep, clock=time.time) -> int:
+    """Near-instant mode: poll the channel every `poll` seconds for `minutes`, handling requests
+    one at a time as they arrive. The workflow restarts it so one listener is always running."""
+    end = clock() + minutes * 60
+    cache: dict = {}
+    seen: set[str] = set()
+    handled = 0
+    while clock() < end:
+        try:
+            req = find_next(slack, channel, start=start, allowed=allowed, cache=cache)
+        except Exception as e:      # Slack hiccup: wait and try again
+            print("poll error", e, file=sys.stderr, flush=True)
+            req = None
+        if req and req["ts"] in seen:   # Slack hasn't caught up with our reaction yet
+            req = None
+        if req:
+            seen.add(req["ts"])
+            print(f"picked {req['kind']} request {req['ts']} from {req['requester']}", flush=True)
+            claim(slack, channel, req)
+            finish(slack, req, live)
+            sh("git", "pull", "-q", "--ff-only", "origin", "main", check=False)   # stay current
+            handled += 1
+            continue
+        sleep(poll)
+    print(f"listener done: {handled} request(s) handled", flush=True)
+    return 0
+
+
 def main(argv: list[str]) -> int:
     token, channel = os.environ.get("SLACK_BOT_TOKEN"), os.environ.get("SLACK_CHANNEL_ID")
     if not token or not channel or not os.environ.get("ANTHROPIC_API_KEY"):
@@ -448,10 +522,7 @@ def main(argv: list[str]) -> int:
             print("no pending requests")
             out.unlink(missing_ok=True)
             return 0
-        slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
-        if req["kind"] != "blocked":
-            slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
-                       text="👀 On it. I'll reply here when it's live (usually 3 to 6 minutes).")
+        claim(slack, channel, req)
         out.write_text(json.dumps(req, indent=2))
         print(f"picked {req['kind']} request {req['ts']} from {req['requester']}")
         gh_out = os.environ.get("GITHUB_OUTPUT")
@@ -462,20 +533,15 @@ def main(argv: list[str]) -> int:
 
     if argv[:1] == ["run"]:
         req = json.loads(Path(argv[1]).read_text())
-        try:
-            reaction, text = handle(req, slack, live)
-        except Exception as e:  # never leave a request silently hanging
-            reset_worktree()
-            owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
-            reaction, text = "warning", (f"⚠️ Something went wrong and nothing was changed. "
-                                         f"{f'<@{owner}> ' if owner else ''}has been flagged.\n`{str(e)[:300]}`")
-            print("ERROR", e, file=sys.stderr)
-        slack.call("chat.postMessage", channel=req["channel"], thread_ts=req["thread_ts"], text=text,
-                   unfurl_links="false")
-        slack.call("reactions.remove", channel=req["channel"], timestamp=req["ts"], name="eyes")
-        slack.call("reactions.add", channel=req["channel"], timestamp=req["ts"], name=reaction)
-        print(reaction, text)
-        return 0 if reaction != "warning" else 1
+        return 0 if finish(slack, req, live) != "warning" else 1
+
+    if argv[:1] == ["listen"]:
+        allowed = {u.strip() for u in os.environ.get("WEBSITE_REQUESTS_ALLOWED", "").split(",") if u.strip()}
+        return listen(slack, channel, live,
+                      minutes=float(os.environ.get("LISTEN_MINUTES") or 340),
+                      poll=float(os.environ.get("POLL_SECONDS") or 10),
+                      start=float(os.environ.get("WEBSITE_REQUESTS_START") or 0),
+                      allowed=allowed or None)
 
     print(__doc__)
     return 2

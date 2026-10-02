@@ -1,33 +1,34 @@
 name: Website requests (Slack -> live site)
 
-# Every 5 minutes: pick up the oldest unhandled request in the #website-requests Slack channel
-# (or an email to website@ascendpoint.agency, which lands there), let Claude make the change,
-# run every site check, commit to main, publish, and reply in the Slack thread.
+# Near-instant website changes from the #website-requests Slack channel (and emails to
+# website@ascendpoint.agency, which Slack posts into that channel).
+#
+# One "listener" run is always going: it polls the channel every 10 seconds for ~5.7 hours, and
+# for each request lets Claude make the change, runs every site check, commits to main, publishes,
+# and replies in the Slack thread. The cron below starts a fresh listener every 15 minutes; a new
+# run exits straight away if an older listener is still running, so there is never more than one
+# and a gap is at most ~15 minutes (GitHub cron permitting). Free for public repositories.
 # See tools/website_requests.py and README "Website requests".
 #
 # Needs: secrets SLACK_BOT_TOKEN + ANTHROPIC_API_KEY, variable SLACK_CHANNEL_ID.
-# Email requests arrive through the channel's own Slack email address (website@ascendpoint.agency forwards there).
 # Optional variables: WEBSITE_REQUESTS_START (unix time; ignore older messages),
 # WEBSITE_REQUESTS_ALLOWED (comma-separated Slack user IDs), WEBSITE_REQUESTS_OWNER (Slack user ID
-# to @mention when something fails), CLAUDE_MODEL (default "sonnet").
+# to @mention when something fails), WEBSITE_REQUESTS_EMAIL_DOMAINS, CLAUDE_MODEL (default
+# "sonnet"), CLAUDE_MAX_USD (default 3), POLL_SECONDS (default 10).
 
 on:
   schedule:
-    - cron: "*/5 * * * *"
+    - cron: "*/15 * * * *"
   workflow_dispatch:
 
 permissions:
   contents: write   # commit the change to main
   actions: write    # start the deploy workflow (pushes made with GITHUB_TOKEN don't trigger it)
 
-concurrency:
-  group: website-requests
-  cancel-in-progress: false
-
 jobs:
-  handle:
+  listen:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
+    timeout-minutes: 355
     env:
       SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
       ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -36,36 +37,51 @@ jobs:
       WEBSITE_REQUESTS_ALLOWED: ${{ vars.WEBSITE_REQUESTS_ALLOWED }}
       WEBSITE_REQUESTS_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
       WEBSITE_REQUESTS_EMAIL_DOMAINS: ${{ vars.WEBSITE_REQUESTS_EMAIL_DOMAINS }}
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+      CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
+      POLL_SECONDS: ${{ vars.POLL_SECONDS }}
       LIVE_URL: ${{ vars.LIVE_URL }}
+      GH_TOKEN: ${{ github.token }}
     steps:
+      - name: Only one listener at a time
+        id: gate
+        run: |
+          if [ -z "$SLACK_BOT_TOKEN" ] || [ -z "$ANTHROPIC_API_KEY" ] || [ -z "$SLACK_CHANNEL_ID" ]; then
+            echo "Not configured yet (SLACK_BOT_TOKEN / ANTHROPIC_API_KEY / SLACK_CHANNEL_ID); nothing to do."
+            echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
+          fi
+          older=$(gh api "repos/${{ github.repository }}/actions/workflows/website-requests.yml/runs?status=in_progress&per_page=20" \
+            --jq "[.workflow_runs[] | select(.id < ${{ github.run_id }})] | length")
+          if [ "${older:-0}" -gt 0 ]; then
+            echo "A listener is already running; exiting."
+            echo "go=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "go=true" >> "$GITHUB_OUTPUT"
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.gate.outputs.go == 'true'
         with:
           fetch-depth: 0        # build.py takes sitemap dates from git history
 
-      - name: Find the next request
-        id: next
-        run: python3 tools/website_requests.py next request.json
-
       - uses: actions/setup-python@v5
-        if: steps.next.outputs.found == 'true'
+        if: steps.gate.outputs.go == 'true'
         with:
           python-version: "3.12"
 
       - uses: actions/setup-node@v4
-        if: steps.next.outputs.found == 'true'
+        if: steps.gate.outputs.go == 'true'
         with:
           node-version: "22"
 
       - name: Install tools
-        if: steps.next.outputs.found == 'true'
+        if: steps.gate.outputs.go == 'true'
         run: |
           pip install pillow
           npm install -g @anthropic-ai/claude-code
 
-      - name: Make the change, check, publish, reply
-        if: steps.next.outputs.found == 'true'
+      - name: Listen for requests (~5.7 hours)
+        if: steps.gate.outputs.go == 'true'
         env:
-          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
-          CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
-          GH_TOKEN: ${{ github.token }}
-        run: python3 tools/website_requests.py run request.json
+          LISTEN_MINUTES: "340"
+        run: python3 tools/website_requests.py listen

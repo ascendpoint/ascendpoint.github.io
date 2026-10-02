@@ -21,7 +21,7 @@ Anyone at AscendPoint can change the site without GitHub, Kinsta or Claude accou
 - **Email:** send it to **website@ascendpoint.agency** from your team address. The answer comes back
   in #website-requests (emails from outside the team domains are refused with 🚫).
 
-What happens (about 3 to 6 minutes, fully automatic):
+What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 1. AscendPoint AI reacts 👀 and replies "On it" in the thread.
 2. Claude makes the change on the site's code and runs every quality check (links, titles, images,
    redirects, schema). If anything fails, nothing goes live.
@@ -32,8 +32,9 @@ What happens (about 3 to 6 minutes, fully automatic):
 
 Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
 
-How it works: `.github/workflows/website-requests.yml` runs every 5 minutes in GitHub Actions
-(no one's computer needs to be on) and `tools/website_requests.py` does the work: Claude Code in
+How it works: `.github/workflows/website-requests.yml` keeps one listener running in GitHub Actions
+(polls Slack every 10 s for ~5.7 h; cron restarts it every 15 min; free on a public repo; no one's
+computer needs to be on). Email lands in the channel instantly, so it is picked up the same way and `tools/website_requests.py` does the work: Claude Code in
 headless mode with a tight tool allowlist (edit `site/` only, run the build; no git, no web, no shell),
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
@@ -41,7 +42,8 @@ a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint
 ↩️ undone, 🚫 refused email). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
 
 Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
-key from console.anthropic.com, typically $0.20 to $1 per request) and `SLACK_BOT_TOKEN` (the AscendPoint AI
+key from the Claude Console, ideally in its own workspace "AscendPoint website robot" so Usage/Cost shows
+exactly what the robot spends; typically $0.20 to $1 per request, also printed in each ✅ reply) and `SLACK_BOT_TOKEN` (the AscendPoint AI
 Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`, `reactions:write`,
 `users:read`, `files:read`; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
@@ -59,6 +61,8 @@ Slack email address (channel → "Send emails to channel"); Slack posts each ema
 an email file and the robot reads sender/subject/body from it. Adding that external address needs
 "Allow external members" permitted for groups in the Google Admin console.
 To pause the robot: Actions → "Website requests" → ⋯ → Disable workflow.
+If the repo is ever made private, the always-on listener would use ~43,000 Actions minutes/month
+(over the free tier): switch the cron to `*/5` with `LISTEN_MINUTES: "4"` or move to Slack Events first.
 
 ## Changing the site: ask Claude
 

@@ -159,6 +159,43 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(req["files"][0]["name"], "shot.png")
 
 
+class ListenTests(unittest.TestCase):
+    def test_listener_picks_up_a_request_that_arrives_mid_poll(self):
+        fake = FakeSlack([])
+        clock = {"t": NOW}
+        polls = {"n": 0}
+
+        def sleep(sec):
+            clock["t"] += sec
+            polls["n"] += 1
+            if polls["n"] == 3:   # someone posts while the listener is waiting
+                fake.history.append(msg(clock["t"] - 1, text="Fix the footer phone number"))
+
+        done = []
+        with mock.patch.object(wr, "finish", lambda sl, req, live: done.append(req["text"]) or "white_check_mark"), \
+             mock.patch.object(wr, "sh", lambda *a, **k: None), \
+             mock.patch.object(wr.time, "time", lambda: clock["t"]):
+            wr.listen(fake, "C1", "https://x", minutes=1, poll=10, sleep=sleep, clock=lambda: clock["t"])
+        self.assertEqual(done, ["Fix the footer phone number"])
+        self.assertTrue(any(c[0] == "reactions.add" and c[1]["name"] == "eyes" for c in fake.calls))
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "auth.test"), 1)   # cached
+
+    def test_quiet_threads_are_not_reread(self):
+        top = msg(NOW - 300, text="Add a news post", reply_count=1, latest_reply=f"{NOW - 200:.6f}",
+                  reactions=[{"name": "white_check_mark", "users": [BOT]}])
+        thread = [top, msg(NOW - 200, user=BOT, text="✅ Live")]
+        fake = FakeSlack([top], {top["ts"]: thread})
+        cache = {}
+        for _ in range(3):
+            self.assertIsNone(wr.find_next(fake, "C1", now=NOW, cache=cache))
+        self.assertEqual(sum(1 for c in fake.calls if c[0] == "conversations.replies"), 1)
+        # a new reply changes latest_reply, so the thread is read again
+        thread.append(msg(NOW - 100, text="undo"))
+        top["latest_reply"] = f"{NOW - 100:.6f}"
+        req = wr.find_next(fake, "C1", now=NOW, cache=cache)
+        self.assertEqual(req["kind"], "undo")
+
+
 class UrlTests(unittest.TestCase):
     def test_url_for(self):
         self.assertEqual(wr.url_for("site/pages/index.html"), "/")
