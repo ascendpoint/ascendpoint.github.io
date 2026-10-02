@@ -9,6 +9,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+import urllib.error
 from pathlib import Path
 from unittest import mock
 
@@ -194,6 +195,40 @@ class ListenTests(unittest.TestCase):
         top["latest_reply"] = f"{NOW - 100:.6f}"
         req = wr.find_next(fake, "C1", now=NOW, cache=cache)
         self.assertEqual(req["kind"], "undo")
+
+
+class WaitLiveTests(unittest.TestCase):
+    def test_sends_browser_user_agent_and_detects_new_version(self):
+        seen = []
+        versions = iter(["oldsha 2026-10-02", "newsha123 2026-10-02"])
+
+        class Resp:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.body.encode()
+
+        def opener(req, timeout):
+            seen.append(req)
+            return Resp(next(versions))
+
+        t = {"now": 0.0}
+        ok = wr.wait_live("newsha", "https://ascendpoint.agency", timeout=60, poll=5, opener=opener,
+                          sleep=lambda s: t.update(now=t["now"] + s), clock=lambda: t["now"])
+        self.assertTrue(ok)
+        self.assertEqual(len(seen), 2)
+        self.assertIn("Mozilla", seen[0].get_header("User-agent"))
+        self.assertIn("/version.txt?v=", seen[0].full_url)
+
+    def test_gives_up_after_timeout(self):
+        t = {"now": 0.0}
+
+        def opener(req, timeout):
+            raise urllib.error.HTTPError(req.full_url, 403, "Forbidden", {}, None)
+
+        ok = wr.wait_live("x", "https://x", timeout=30, poll=5, opener=opener,
+                          sleep=lambda s: t.update(now=t["now"] + s), clock=lambda: t["now"])
+        self.assertFalse(ok)
 
 
 class UrlTests(unittest.TestCase):

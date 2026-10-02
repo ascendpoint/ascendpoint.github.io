@@ -351,16 +351,25 @@ def run_claude(req: dict) -> dict:
     return result
 
 
-def wait_live(sha: str, live_url: str, timeout: int = 9 * 60) -> bool:
-    end = time.time() + timeout
-    while time.time() < end:
+LIVE_UA = "Mozilla/5.0 (compatible; AscendPointAI-website-robot/1.0; +https://ascendpoint.agency)"
+
+
+def wait_live(sha: str, live_url: str, timeout: int = 9 * 60, poll: float = 5, opener=None,
+              sleep=time.sleep, clock=time.time) -> bool:
+    """True once {live_url}/version.txt shows `sha`. The host blocks the default Python
+    user agent (403), so send a browser-like one, and bust the edge cache on every poll."""
+    opener = opener or urllib.request.urlopen
+    end = clock() + timeout
+    while clock() < end:
+        url = f"{live_url}/version.txt?v={int(clock() * 1000)}"
+        req = urllib.request.Request(url, headers={"User-Agent": LIVE_UA, "Cache-Control": "no-cache"})
         try:
-            with urllib.request.urlopen(f"{live_url}/version.txt?v={int(time.time())}", timeout=20) as r:
+            with opener(req, timeout=20) as r:
                 if r.read().decode().strip().startswith(sha):
                     return True
-        except Exception:
-            pass
-        time.sleep(20)
+        except Exception as e:
+            print("live check:", e, file=sys.stderr, flush=True)
+        sleep(poll)
     return False
 
 
@@ -468,7 +477,7 @@ def claim(slack: Slack, channel: str, req: dict):
     slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
     if req["kind"] != "blocked":
         slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
-                   text="👀 On it. I'll reply here when it's live (usually 3 to 6 minutes).")
+                   text="👀 On it. I'll reply here when it's live (usually 2 to 4 minutes).")
 
 
 def finish(slack: Slack, req: dict, live: str) -> str:
@@ -493,7 +502,10 @@ def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
            start: float = 0.0, allowed: set[str] | None = None, sleep=time.sleep, clock=time.time) -> int:
     """Near-instant mode: poll the channel every `poll` seconds for `minutes`, handling requests
     one at a time as they arrive. The workflow restarts it so one listener is always running."""
-    end = clock() + minutes * 60
+    end = float(os.environ.get("LISTEN_UNTIL") or 0) or clock() + minutes * 60
+    me = Path(__file__).resolve()
+    my_code = me.read_bytes()
+    last_pull = clock()
     cache: dict = {}
     seen: set[str] = set()
     handled = 0
@@ -510,8 +522,16 @@ def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
             print(f"picked {req['kind']} request {req['ts']} from {req['requester']}", flush=True)
             claim(slack, channel, req)
             finish(slack, req, live)
-            sh("git", "pull", "-q", "--ff-only", "origin", "main", check=False)   # stay current
             handled += 1
+            last_pull = 0                       # pull now: the change just shipped
+        if clock() - last_pull > 300 or not last_pull:
+            sh("git", "pull", "-q", "--ff-only", "origin", "main", check=False)   # stay current
+            last_pull = clock()
+            if me.exists() and me.read_bytes() != my_code:   # robot code changed on main: restart into it
+                print("robot code updated on main; restarting listener", flush=True)
+                os.environ["LISTEN_UNTIL"] = str(end)
+                os.execv(sys.executable, [sys.executable, str(me), "listen"])
+        if req:
             continue
         sleep(poll)
     print(f"listener done: {handled} request(s) handled", flush=True)
