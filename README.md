@@ -18,7 +18,8 @@ Anyone at AscendPoint can change the site without GitHub, Kinsta or Claude accou
 
 - **Slack:** post in **#website-requests** what you want, in plain English (screenshots and photos
   welcome). One request per message.
-- **Email:** send it to **website@ascendpoint.agency** (Zapier posts it into #website-requests).
+- **Email:** send it to **website@ascendpoint.agency** from your team address. The answer comes back
+  in #website-requests (emails from outside the team domains are refused with 🚫).
 
 What happens (about 3 to 6 minutes, fully automatic):
 1. AscendPoint AI reacts 👀 and replies "On it" in the thread.
@@ -37,7 +38,7 @@ headless mode with a tight tool allowlist (edit `site/` only, run the build; no 
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
 `/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 💬 question, ⚠️ failed,
-↩️ undone). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
+↩️ undone, 🚫 refused email). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
 
 Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
 key from console.anthropic.com, typically $0.20 to $1 per request) and `SLACK_BOT_TOKEN` (the AscendPoint AI
@@ -45,7 +46,18 @@ Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`
 `users:read`, `files:read`; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
 (comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
-to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3).
+to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3),
+`WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,
+serp.agency, serp.co, smilerevenue.com, medicalmarketingwhiz.com).
+
+Current setup (Oct 2 2026): Slack workspace AscendPoint Agency, channel **#website-requests**
+(`C0C67AHG5T8`, public); bot = Slack app A0BB2TCVB9P "AscendPoint AI" (bot user U0BAXPR7CH3, shown as
+"AscendPoint MCP" until the app is reinstalled; it also powers Kyle's local slack-ascendpoint MCP);
+`WEBSITE_REQUESTS_OWNER` = Kyle (U04Q3M29UKE). Email path: Google Group **website@ascendpoint.agency**
+(owner kyle@ascendpoint.agency, posting limited to the organization) whose member is the channel's
+Slack email address (channel → "Send emails to channel"); Slack posts each email into the channel as
+an email file and the robot reads sender/subject/body from it. Adding that external address needs
+"Allow external members" permitted for groups in the Google Admin console.
 To pause the robot: Actions → "Website requests" → ⋯ → Disable workflow.
 
 ## Changing the site: ask Claude

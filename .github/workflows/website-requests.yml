@@ -1,11 +1,12 @@
 name: Website requests (Slack -> live site)
 
 # Every 5 minutes: pick up the oldest unhandled request in the #website-requests Slack channel
-# (or an email to website@ascendpoint.agency that Zapier posts there), let Claude make the change,
+# (or an email to website@ascendpoint.agency, which lands there), let Claude make the change,
 # run every site check, commit to main, publish, and reply in the Slack thread.
 # See tools/website_requests.py and README "Website requests".
 #
 # Needs: secrets SLACK_BOT_TOKEN + ANTHROPIC_API_KEY, variable SLACK_CHANNEL_ID.
+# Email requests arrive through the channel's own Slack email address (website@ascendpoint.agency forwards there).
 # Optional variables: WEBSITE_REQUESTS_START (unix time; ignore older messages),
 # WEBSITE_REQUESTS_ALLOWED (comma-separated Slack user IDs), WEBSITE_REQUESTS_OWNER (Slack user ID
 # to @mention when something fails), CLAUDE_MODEL (default "sonnet").
@@ -34,6 +35,7 @@ jobs:
       WEBSITE_REQUESTS_START: ${{ vars.WEBSITE_REQUESTS_START }}
       WEBSITE_REQUESTS_ALLOWED: ${{ vars.WEBSITE_REQUESTS_ALLOWED }}
       WEBSITE_REQUESTS_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
+      WEBSITE_REQUESTS_EMAIL_DOMAINS: ${{ vars.WEBSITE_REQUESTS_EMAIL_DOMAINS }}
       LIVE_URL: ${{ vars.LIVE_URL }}
     steps:
       - uses: actions/checkout@v4

@@ -8,8 +8,10 @@ Runs in GitHub Actions (.github/workflows/website-requests.yml) every 5 minutes:
 
 Front doors (both land in the Slack channel, which is the single queue):
   * a message in #website-requests (top-level = new request; reply in the thread = follow-up)
-  * an email to website@ascendpoint.agency, which Zapier posts into the channel as
-    "📧 Email request from <name> <email>: ..."
+  * an email to website@ascendpoint.agency: a Google Group whose member is the channel's own
+    Slack email address, so Slack posts the email into the channel (an "email" file with
+    from/subject/body). Only senders at WEBSITE_REQUESTS_EMAIL_DOMAINS are acted on.
+    (A Zapier-style text post "📧 Email request from <name> <email>: ..." also works.)
 
 For each request the robot:
   1. reacts 👀 and replies "On it" in the thread,
@@ -24,7 +26,8 @@ State lives in Slack reactions: a message the bot has reacted to is never picked
 
 Environment: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ANTHROPIC_API_KEY, GITHUB_TOKEN (Actions),
 optional WEBSITE_REQUESTS_START (unix ts; ignore older messages), WEBSITE_REQUESTS_ALLOWED
-(comma-separated Slack user IDs; empty = anyone in the channel), LIVE_URL, CLAUDE_MODEL.
+(comma-separated Slack user IDs; empty = anyone in the channel), WEBSITE_REQUESTS_EMAIL_DOMAINS
+(comma-separated sender domains for email requests; default below), LIVE_URL, CLAUDE_MODEL.
 Standard library only.
 """
 from __future__ import annotations
@@ -41,7 +44,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SLACK = "https://slack.com/api/"
-HANDLED = {"eyes", "white_check_mark", "warning", "speech_balloon", "leftwards_arrow_with_hook"}
+HANDLED = {"eyes", "white_check_mark", "warning", "speech_balloon", "leftwards_arrow_with_hook",
+           "no_entry_sign"}
 MAX_AGE = 2 * 24 * 3600          # never pick up anything older than 2 days
 UNDO_RE = re.compile(r"^\W*(undo|revert|roll ?back)\b", re.I)
 IGNORE_RE = re.compile(r"^\s*(//|note:|fyi\b)", re.I)
@@ -49,6 +53,20 @@ EMAIL_PREFIX = "📧"
 RESULT = Path("/tmp/website_request_result.json")
 FILES_DIR = Path("/tmp/website_request_files")
 BOT_NAME = "AscendPoint AI"
+DEFAULT_EMAIL_DOMAINS = "ascendpoint.agency,serp.agency,serp.co,smilerevenue.com,medicalmarketingwhiz.com"
+
+
+def email_domains() -> set[str]:
+    raw = os.environ.get("WEBSITE_REQUESTS_EMAIL_DOMAINS") or DEFAULT_EMAIL_DOMAINS
+    return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
+
+
+def email_file(msg: dict) -> dict | None:
+    """The email Slack posted into the channel (sent to the channel's Slack email address)."""
+    for f in msg.get("files") or []:
+        if f.get("mode") == "email" or f.get("filetype") == "email":
+            return f
+    return None
 
 
 # ----------------------------------------------------------------------------- Slack
@@ -86,6 +104,8 @@ def is_request(msg: dict, bot_user: str, bot_id: str | None) -> bool:
     text = msg.get("text", "") or ""
     if msg.get("user") == bot_user or (bot_id and msg.get("bot_id") == bot_id):
         return False
+    if email_file(msg) and sub in (None, "file_share", "bot_message"):
+        return True                       # an email posted by Slack's channel-email feature
     if sub in (None, "file_share", "thread_broadcast"):
         if msg.get("bot_id") and not text.startswith(EMAIL_PREFIX):
             return False
@@ -123,7 +143,8 @@ def find_next(slack: Slack, channel: str, now: float | None = None,
                     candidates.append((r, thread))
     if allowed:
         candidates = [c for c in candidates
-                      if c[0].get("user") in allowed or (c[0].get("text", "").startswith(EMAIL_PREFIX))]
+                      if c[0].get("user") in allowed or email_file(c[0])
+                      or c[0].get("text", "").startswith(EMAIL_PREFIX)]
     if not candidates:
         return None
     msg, thread = min(candidates, key=lambda c: float(c[0]["ts"]))
@@ -149,19 +170,41 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
         who = BOT_NAME if t.get("user") == bot_user else user_name(slack, t.get("user"))
         context.append(f"{who}: {t.get('text', '')}")
     text = msg.get("text", "")
-    requester = user_name(slack, msg.get("user"))
-    if text.startswith(EMAIL_PREFIX):
-        m = re.match(r"📧\s*Email request from\s+([^:\n]+)", text)
-        requester = (m.group(1).strip() if m else "email") + " (email)"
+    files = [{"name": f.get("name"), "mimetype": f.get("mimetype"),
+              "url": f.get("url_private_download") or f.get("url_private")}
+             for f in msg.get("files", []) if f.get("url_private") and not email_file({"files": [f]})]
+    sender = None
+    em = email_file(msg)
+    if em:
+        frm = (em.get("from") or [{}])[0]
+        sender = (frm.get("address") or "").strip().lower()
+        name = (frm.get("name") or "").strip()
+        requester = (f"{name} <{sender}>" if name else sender or "unknown sender") + " (email)"
+        body = (em.get("plain_text") or em.get("preview_plain_text") or em.get("preview") or "").strip()
+        subject = (em.get("subject") or em.get("title") or "").strip()
+        text = (f"Subject: {subject}\n\n" if subject else "") + (body or text)
+        for a in em.get("attachments") or []:      # files attached to the email, when Slack lists them
+            url = a.get("url_private") or a.get("url")
+            if url:
+                files.append({"name": a.get("filename") or a.get("name"), "mimetype": a.get("mimetype"),
+                              "url": url})
+    else:
+        requester = user_name(slack, msg.get("user"))
+        if text.startswith(EMAIL_PREFIX):
+            m = re.match(r"📧\s*Email request from\s+([^:\n]+)", text)
+            requester = (m.group(1).strip() if m else "email") + " (email)"
+            a = re.search(r"<([^<>@\s]+@[^<>\s]+)>", m.group(1) if m else "")
+            sender = a.group(1).lower() if a else None
+    kind = ("undo" if UNDO_RE.match(text or "") and thread_ts != msg["ts"] else
+            ("followup" if thread_ts != msg["ts"] else "new"))
+    if requester.endswith("(email)"):
+        domain = (sender or "").rsplit("@", 1)[-1] if sender and "@" in sender else ""
+        if domain not in email_domains():
+            kind = "blocked"
     return {
         "channel": channel, "ts": msg["ts"], "thread_ts": thread_ts,
-        "user": msg.get("user"), "requester": requester, "text": text,
-        "files": [{"name": f.get("name"), "mimetype": f.get("mimetype"),
-                   "url": f.get("url_private_download") or f.get("url_private")}
-                  for f in msg.get("files", []) if f.get("url_private")],
-        "kind": "undo" if UNDO_RE.match(text or "") and thread_ts != msg["ts"] else
-                ("followup" if thread_ts != msg["ts"] else "new"),
-        "context": context,
+        "user": msg.get("user"), "requester": requester, "sender": sender, "text": text,
+        "files": files, "kind": kind, "context": context,
     }
 
 
@@ -327,6 +370,10 @@ def links(pages: list[str], live: str) -> str:
 
 def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
     """Returns (reaction, reply text)."""
+    if req["kind"] == "blocked":
+        return "no_entry_sign", ("🚫 I only act on emailed website requests from team addresses "
+                                 f"({', '.join(sorted(email_domains()))}). Nothing was changed. "
+                                 "Anyone on the team can post the request here instead.")
     if req["kind"] == "undo":
         commits = thread_commits(req["thread_ts"])
         if not commits:
@@ -402,8 +449,9 @@ def main(argv: list[str]) -> int:
             out.unlink(missing_ok=True)
             return 0
         slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
-        slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
-                   text="👀 On it. I'll reply here when it's live (usually 3 to 6 minutes).")
+        if req["kind"] != "blocked":
+            slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"],
+                       text="👀 On it. I'll reply here when it's live (usually 3 to 6 minutes).")
         out.write_text(json.dumps(req, indent=2))
         print(f"picked {req['kind']} request {req['ts']} from {req['requester']}")
         gh_out = os.environ.get("GITHUB_OUTPUT")

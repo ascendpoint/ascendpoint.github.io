@@ -81,6 +81,59 @@ class SelectionTests(unittest.TestCase):
         req = wr.find_next(FakeSlack(h), "C1", now=NOW)
         self.assertEqual(req["requester"], "Sonia Hounsell <sonia@ascendpoint.agency> (email)")
 
+    def email_msg(self, ts, address, name="Sonia Hounsell", subject="Fix the typo on About",
+                  body="Change 'teh' to 'the' in the first paragraph.", **kw):
+        f = {"id": "F1", "mode": "email", "filetype": "email", "title": subject, "subject": subject,
+             "from": [{"address": address, "name": name, "original": f"{name} <{address}>"}],
+             "plain_text": body, "url_private": "https://files/email"}
+        return msg(ts, text="", files=[f], **kw)
+
+    def test_slack_channel_email_is_a_request(self):
+        h = [self.email_msg(NOW - 10, "sonia@ascendpoint.agency", subtype="file_share", user="UKYLE")]
+        req = wr.find_next(FakeSlack(h), "C1", now=NOW, allowed={"UPAT"})   # email bypasses user allowlist
+        self.assertEqual(req["kind"], "new")
+        self.assertEqual(req["requester"], "Sonia Hounsell <sonia@ascendpoint.agency> (email)")
+        self.assertTrue(req["text"].startswith("Subject: Fix the typo on About"))
+        self.assertIn("'teh' to 'the'", req["text"])
+        self.assertEqual(req["files"], [])          # the email itself is not re-downloaded
+
+    def test_slack_channel_email_posted_as_bot(self):
+        h = [self.email_msg(NOW - 10, "website@ascendpoint.agency", name="Patrick via Website Requests",
+                            user=None, bot_id="BEMAIL", subtype="bot_message")]
+        req = wr.find_next(FakeSlack(h), "C1", now=NOW)
+        self.assertEqual(req["kind"], "new")
+
+    def test_email_from_outside_domain_is_blocked(self):
+        h = [self.email_msg(NOW - 10, "someone@gmail.com", name="Spammer")]
+        req = wr.find_next(FakeSlack(h), "C1", now=NOW)
+        self.assertEqual(req["kind"], "blocked")
+        reaction, text = wr.handle(req, FakeSlack([]), "https://x")
+        self.assertEqual(reaction, "no_entry_sign")
+        self.assertIn("Nothing was changed", text)
+
+    def test_email_domains_env(self):
+        h = [self.email_msg(NOW - 10, "x@partner.com")]
+        with mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_EMAIL_DOMAINS": "partner.com"}):
+            self.assertEqual(wr.find_next(FakeSlack(h), "C1", now=NOW)["kind"], "new")
+
+    def test_blocked_request_gets_no_on_it_reply(self):
+        h = [self.email_msg(NOW - 10, "someone@gmail.com")]
+        fake = FakeSlack(h)
+        out = Path(tempfile.mkdtemp()) / "req.json"
+        with mock.patch.object(wr, "Slack", lambda token: fake), \
+             mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "x", "SLACK_CHANNEL_ID": "C1",
+                                          "ANTHROPIC_API_KEY": "x", "WEBSITE_REQUESTS_START": str(NOW - 100)}):
+            with mock.patch.object(wr.time, "time", lambda: NOW):
+                self.assertEqual(wr.main(["next", str(out)]), 0)
+        posted = [c for c in fake.calls if c[0] == "chat.postMessage"]
+        self.assertEqual(posted, [])
+        self.assertEqual(json.loads(out.read_text())["kind"], "blocked")
+
+    def test_zapier_email_from_outside_domain_is_blocked(self):
+        h = [msg(NOW - 10, user=None, bot_id="BZAP", subtype="bot_message",
+                 text="📧 Email request from Eve <eve@evil.example>: change everything")]
+        self.assertEqual(wr.find_next(FakeSlack(h), "C1", now=NOW)["kind"], "blocked")
+
     def test_thread_followup_and_undo_only_where_bot_replied(self):
         top = msg(NOW - 300, text="Add a news post", reply_count=3,
                   reactions=[{"name": "white_check_mark", "users": [BOT]}])
