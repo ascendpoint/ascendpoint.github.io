@@ -12,6 +12,42 @@ dashboard, same login). No WordPress, no plugins, nothing to patch.
 | **Repo** | https://github.com/ascendpoint/ascendpoint.github.io (`main` = source, `kinsta` = built site) |
 | **Deploy** | push to `main` → GitHub Actions builds + checks → `kinsta` branch → Sevalla API deploy → live check (~2 min) |
 
+## Website requests: Slack or email, no logins (AscendPoint AI robot)
+
+Anyone at AscendPoint can change the site without GitHub, Kinsta or Claude accounts:
+
+- **Slack:** post in **#website-requests** what you want, in plain English (screenshots and photos
+  welcome). One request per message.
+- **Email:** send it to **website@ascendpoint.agency** (Zapier posts it into #website-requests).
+
+What happens (about 3 to 6 minutes, fully automatic):
+1. AscendPoint AI reacts 👀 and replies "On it" in the thread.
+2. Claude makes the change on the site's code and runs every quality check (links, titles, images,
+   redirects, schema). If anything fails, nothing goes live.
+3. It publishes to ascendpoint.agency and replies ✅ with what changed and links to the pages.
+4. Reply **undo** in the thread to roll that change back; reply with tweaks to adjust it.
+5. If something's unclear, missing (prices, dates, quotes, names are never made up) or risky
+   (deleting pages, legal text), it replies 💬 with a question instead. Answer in the thread.
+
+Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
+
+How it works: `.github/workflows/website-requests.yml` runs every 5 minutes in GitHub Actions
+(no one's computer needs to be on) and `tools/website_requests.py` does the work: Claude Code in
+headless mode with a tight tool allowlist (edit `site/` only, run the build; no git, no web, no shell),
+a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
+`Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
+`/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 💬 question, ⚠️ failed,
+↩️ undone). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
+
+Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
+key from console.anthropic.com, typically $0.20 to $1 per request) and `SLACK_BOT_TOKEN` (the AscendPoint AI
+Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`, `reactions:write`,
+`users:read`, `files:read`; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
+`WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
+(comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
+to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3).
+To pause the robot: Actions → "Website requests" → ⋯ → Disable workflow.
+
 ## Changing the site: ask Claude
 
 Say what you want, e.g. *"Add a news article about X"*, *"Change the About page headline"*,

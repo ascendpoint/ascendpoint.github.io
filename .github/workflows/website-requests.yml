@@ -1,0 +1,69 @@
+name: Website requests (Slack -> live site)
+
+# Every 5 minutes: pick up the oldest unhandled request in the #website-requests Slack channel
+# (or an email to website@ascendpoint.agency that Zapier posts there), let Claude make the change,
+# run every site check, commit to main, publish, and reply in the Slack thread.
+# See tools/website_requests.py and README "Website requests".
+#
+# Needs: secrets SLACK_BOT_TOKEN + ANTHROPIC_API_KEY, variable SLACK_CHANNEL_ID.
+# Optional variables: WEBSITE_REQUESTS_START (unix time; ignore older messages),
+# WEBSITE_REQUESTS_ALLOWED (comma-separated Slack user IDs), WEBSITE_REQUESTS_OWNER (Slack user ID
+# to @mention when something fails), CLAUDE_MODEL (default "sonnet").
+
+on:
+  schedule:
+    - cron: "*/5 * * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write   # commit the change to main
+  actions: write    # start the deploy workflow (pushes made with GITHUB_TOKEN don't trigger it)
+
+concurrency:
+  group: website-requests
+  cancel-in-progress: false
+
+jobs:
+  handle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+      WEBSITE_REQUESTS_START: ${{ vars.WEBSITE_REQUESTS_START }}
+      WEBSITE_REQUESTS_ALLOWED: ${{ vars.WEBSITE_REQUESTS_ALLOWED }}
+      WEBSITE_REQUESTS_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
+      LIVE_URL: ${{ vars.LIVE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0        # build.py takes sitemap dates from git history
+
+      - name: Find the next request
+        id: next
+        run: python3 tools/website_requests.py next request.json
+
+      - uses: actions/setup-python@v5
+        if: steps.next.outputs.found == 'true'
+        with:
+          python-version: "3.12"
+
+      - uses: actions/setup-node@v4
+        if: steps.next.outputs.found == 'true'
+        with:
+          node-version: "22"
+
+      - name: Install tools
+        if: steps.next.outputs.found == 'true'
+        run: |
+          pip install pillow
+          npm install -g @anthropic-ai/claude-code
+
+      - name: Make the change, check, publish, reply
+        if: steps.next.outputs.found == 'true'
+        env:
+          CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+          CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
+          GH_TOKEN: ${{ github.token }}
+        run: python3 tools/website_requests.py run request.json
