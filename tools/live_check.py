@@ -9,7 +9,7 @@ Checks, against the real host:
   * every URL in /sitemap.xml returns 200 with the right canonical
   * every URL in tools/legacy_urls.txt reaches a 200 page in <= 2 redirects, all 301/302
   * security + cache headers are present, /feed.xml and /llms.txt serve with the right type
-  * an unknown URL returns a real 404 status with the branded 404 page
+  * an unknown URL returns a real 404 status (Kinsta shows its own 404 page; see note below)
 """
 import argparse
 import re
@@ -112,8 +112,12 @@ def main():
         if st != 200 or ctype not in t:
             errors.append(f"{path}: {st} {t}")
     st, _, body = fetch(base + "/this-page-does-not-exist-" + str(int(time.time())) + "/")
-    if st != 404 or "couldn't find that page" not in body:
-        errors.append(f"unknown URL returned {st} (want branded 404)")
+    if st != 404:
+        errors.append(f"unknown URL returned {st} (want 404)")
+    elif "couldn't find that page" not in body:
+        # Kinsta static hosting serves its own 404 page. Its "Error file" setting would serve our
+        # 404.html, but with status 200 (a soft 404 that hurts SEO), so it stays off (Oct 1 2026).
+        print("note: unknown URL returns a real 404, but Kinsta's own page, not site/pages/404.html")
 
     for e in errors:
         print("ERROR", e)

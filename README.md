@@ -6,7 +6,7 @@ dashboard, same login). No WordPress, no plugins, nothing to patch.
 
 | | |
 |---|---|
-| **Production** | https://ascendpoint.agency (WordPress until go-live, see *Go-live runbook*) |
+| **Production** | https://ascendpoint.agency (live on Kinsta since Oct 1 2026; www → apex) |
 | **Kinsta preview** | https://ascendpoint-agency-3ueyp.kinsta.page (noindex, no analytics) |
 | **Staging (noindex)** | https://ascendpoint.github.io |
 | **Repo** | https://github.com/ascendpoint/ascendpoint.github.io (`main` = source, `kinsta` = built site) |
@@ -124,27 +124,34 @@ to the closest page. The full inventory is `tools/legacy_urls.txt`; the build pr
 | Build site before publishing | **off** (GitHub Actions already built and checked it) |
 | Publish directory | *(blank = repo root)* |
 | Deploys | GitHub Actions calls the Sevalla API (`POST /v3/static-sites/{id}/deployments`) after each publish. Needs repo secret `SEVALLA_API_KEY` + variable `SEVALLA_SITE_ID`. Without them, click **Deploy now** in Sevalla. |
-| Live verification | repo variable `LIVE_URL` (preview address now, `https://ascendpoint.agency` after go-live) |
+| Domains | `ascendpoint.agency` (**primary**) + `www.ascendpoint.agency` (301 → apex); preview address still answers, noindex |
+| Error file | *(blank on purpose: setting it to 404.html serves that page with status 200, a soft 404; Kinsta's own 404 page keeps the real 404 status)* |
+| Live verification | repo variable `LIVE_URL` = `https://ascendpoint.agency` |
 
 `_redirects` and `_headers` sit at the root of the `kinsta` branch, which is where Kinsta reads them.
 Kinsta quirk (verified live): a splat rule `/x/*` does not match the bare `/x/`, so every splat
 has an exact twin; `tools/test_redirects.py` simulates that behaviour.
 
-## Go-live runbook (WordPress → Kinsta)
+## Go-live record (done Oct 1 2026) and rollback
 
-1. `python3 tools/check.py --strict-launch` passes (no draft quotes / `[confirm]` placeholders).
-2. Sevalla → Domains → add `ascendpoint.agency` and `www.ascendpoint.agency`; add the TXT
-   verification records it shows in Cloudflare as **DNS only** (grey cloud).
-3. In Cloudflare, replace the apex + www records with the A records Sevalla shows (DNS only).
-   Leave MX, SPF, DKIM, DMARC and every other record alone (email keeps working).
-4. When Sevalla shows both domains active with SSL: set the repo variable `LIVE_URL` to
-   `https://ascendpoint.agency`, re-run the workflow, and `tools/live_check.py` confirms every
-   page and every old URL on the real domain.
-5. Google Search Console: submit `https://ascendpoint.agency/sitemap.xml`; URL-inspect the home
-   page. GA4: confirm real-time traffic from the new site.
-6. Add this rule at the top of `site/_redirects` so the preview address stops competing with
-   the real domain: `https://ascendpoint-agency-3ueyp.kinsta.page/*  https://ascendpoint.agency/:splat  301!` (plus the bare `/` twin)
-7. Keep the WordPress install 30 days as a rollback (rollback = point DNS back), then cancel it.
+Cut over on Oct 1 2026 (approved by Kyle):
+
+- Sevalla → Domains: `ascendpoint.agency` (primary) and `www.ascendpoint.agency` added, both Active with SSL.
+- Cloudflare zone `ascendpoint.agency` (account websites@serp.co), all **DNS only** (grey cloud):
+  - `ascendpoint.agency` CNAME `to.kinsta.page` (was `ascendpointmarketing.hosting.kinsta.cloud`, proxied)
+  - `www` CNAME `to.kinsta.page` (was the same WordPress target, proxied)
+  - `_acme-challenge` and `_acme-challenge.www` TXT = Sevalla SSL tokens (replaced the old WordPress
+    `_acme-challenge` CNAME to `ascendpoint.agency.kinstavalidation.app`)
+  - MX, SPF, DKIM (ctct, smtp2go), Google site verification and `analytics.` untouched.
+- Repo variable `LIVE_URL` = `https://ascendpoint.agency`; `tools/live_check.py` passes on the real domain
+  (35 sitemap pages, 51 legacy URLs).
+
+**Rollback** (WordPress is still installed on Kinsta as `ascendpointmarketing`): point the apex and
+www CNAMEs back to `ascendpointmarketing.hosting.kinsta.cloud` (proxied) and restore the
+`_acme-challenge` CNAME above. Keep WordPress ~30 days, then cancel it.
+
+Still to do: submit `https://ascendpoint.agency/sitemap.xml` in Google Search Console (the property
+belongs to a Google account other than kyle@ascendpoint.agency); confirm GA4 real-time traffic.
 
 ## Access
 
