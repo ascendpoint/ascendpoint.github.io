@@ -16,4 +16,11 @@ if(form){
   form.hidden=true;var th=document.getElementById('thanks');th.hidden=false;th.focus();});
  var again=document.getElementById('again');if(again)again.addEventListener('click',function(){form.reset();form.hidden=false;document.getElementById('thanks').hidden=true;});
 }
+/* About timeline: entries start light and darken as they scroll into view. */
+var tl=document.querySelector('.tl');
+if(tl&&'IntersectionObserver' in window&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
+ tl.classList.add('tl-anim');
+ var io=new IntersectionObserver(function(es){es.forEach(function(e){e.target.classList.toggle('in',e.isIntersecting||e.boundingClientRect.top<0);});},{rootMargin:'0px 0px -30% 0px'});
+ tl.querySelectorAll('.tl-item').forEach(function(i){io.observe(i);});
+}
 })();

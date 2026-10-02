@@ -223,6 +223,9 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .tl-link{color:var(--prussian)}
 .tl-link:hover{color:var(--deep);text-decoration:underline;text-underline-offset:3px}
 .tl-body{padding-bottom:26px}
+.tl-anim .tl-body,.tl-anim .tl-dot{opacity:.3;transition:opacity .7s ease}
+.tl-anim .tl-item.in .tl-body,.tl-anim .tl-item.in .tl-dot{opacity:1}
+@media (prefers-reduced-motion:reduce){.tl-anim .tl-body,.tl-anim .tl-dot{opacity:1}}
 .values{display:grid;grid-template-columns:1fr 1fr;gap:12px 20px;font-size:18px;font-weight:400}
 .role{font:600 14px/1.35 var(--display);color:var(--deep)}
 .role.med{color:var(--lion)}
