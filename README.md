@@ -123,7 +123,7 @@ to the closest page. The full inventory is `tools/legacy_urls.txt`; the build pr
 | Source | public repo `https://github.com/ascendpoint/ascendpoint.github.io`, branch **`kinsta`** |
 | Build site before publishing | **off** (GitHub Actions already built and checked it) |
 | Publish directory | *(blank = repo root)* |
-| Deploys | GitHub Actions calls the Sevalla API (`POST /v3/static-sites/{id}/deployments`) after each publish. Needs repo secret `SEVALLA_API_KEY` + variable `SEVALLA_SITE_ID`. Without them, click **Deploy now** in Sevalla. |
+| Deploys | **Automatic** (since Oct 2 2026): GitHub Actions calls the Sevalla API (`POST https://api.sevalla.com/v3/static-sites/{id}/deployments`, body `{"branch":"kinsta"}`) after each publish. Repo secret `SEVALLA_API_KEY` = Sevalla key `github-actions-ascendpoint-deploy` (static-site create/read/update, scoped to this site only, no expiry; rotate in Sevalla → Integration → API keys, then update the secret). Repo variable `SEVALLA_SITE_ID` = `25a02981-5228-4223-8331-d965ed6e420f`. Manual fallback: **Deploy now** in Sevalla. |
 | Domains | `ascendpoint.agency` (**primary**) + `www.ascendpoint.agency` (301 → apex); preview address still answers, noindex |
 | Error file | *(blank on purpose: setting it to 404.html serves that page with status 200, a soft 404; Kinsta's own 404 page keeps the real 404 status)* |
 | Live verification | repo variable `LIVE_URL` = `https://ascendpoint.agency` |
