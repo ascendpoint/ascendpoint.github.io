@@ -167,6 +167,15 @@ class PreviewFlowTests(unittest.TestCase):
         self.assertEqual(reaction, "mag")
         self.assertIn(f"{PREVIEW_URL}/_preview/home-desktop.png", text)
 
+    def test_without_a_preview_site_screenshots_link_to_github(self):
+        slack = FakeSlack(files_write=False)
+        with mock.patch.dict(os.environ, {"PREVIEW_URL": "", "GITHUB_REPOSITORY": "ascendpoint/x"}), \
+                self.claude_writes("New headline"):
+            reaction, text = wr.handle(self.req("preview first: headline New"), slack, LIVE)
+        self.assertEqual(reaction, "mag")
+        self.assertIn("https://github.com/ascendpoint/x/blob/kinsta-preview/_preview/home-desktop.png", text)
+        self.assertIsNotNone(self.origin_file("kinsta-preview", "_preview/home-desktop.png"))
+
     def test_tweak_updates_the_preview_then_approve_ships_exactly_it(self):
         slack = FakeSlack()
         with self.claude_writes("First try"):

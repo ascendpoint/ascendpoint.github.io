@@ -782,8 +782,11 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
             lines.append(links(pages, url) + ("" if preview_ok else
                          "\n_(The preview site is still publishing; give it a minute if a link shows the old page.)_"))
         if shots and not uploaded:
-            if url:
-                lines.append("Screenshots: " + " · ".join(f"<{url}/_preview/{p.name}|{p.stem}>" for p in shots))
+            repo = os.environ.get("GITHUB_REPOSITORY")
+            base = (f"{url}/_preview" if url else
+                    f"https://github.com/{repo}/blob/{PREVIEW_BRANCH}/_preview" if repo else None)
+            if base:
+                lines.append("Screenshots: " + " · ".join(f"<{base}/{p.name}|{p.stem}>" for p in shots))
         elif not shots and not url:
             lines.append("_(I couldn't make screenshots this time; reply *approve* to see it live, or ask again.)_")
         lines.append("_Reply *approve* to put this live, reply with changes to update the preview, "
