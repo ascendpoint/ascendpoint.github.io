@@ -18,6 +18,8 @@ sys.path.insert(0, str(ROOT / "tools"))
 import website_requests as wr  # noqa: E402
 
 TS = "1791100000.000100"
+LIVE = "https://ascendpoint.agency"
+PAGE = "site/pages/index.html"
 PREVIEW_URL = "https://ascendpoint-preview.kinsta.page"
 
 FAKE_BUILD = '''import shutil, subprocess, sys
@@ -215,6 +217,25 @@ class PreviewFlowTests(unittest.TestCase):
         self.assertFalse(self.claude_calls[0]["preview"])
         self.assertIn("Live now", self.origin_file("main", "site/pages/index.html"))
         self.assertNotIn("kinsta-preview", self.branches())
+
+
+    def test_undo_works_when_main_moved_on(self):
+        """Someone else pushed after this thread's change: undo rebases instead of failing."""
+        slack = FakeSlack()
+        with self.claude_writes("Live now"):
+            wr.handle(self.req("change the headline to Live now"), slack, LIVE)
+        other = self.tmp / "other"
+        git(self.tmp, "clone", "-q", str(self.origin), str(other))
+        for k, v in (("user.name", "o"), ("user.email", "o@o"), ("commit.gpgsign", "false")):
+            git(other, "config", k, v)
+        (other / "NOTES.md").write_text("pushed by someone else\n")
+        git(other, "add", "-A")
+        git(other, "commit", "-qm", "unrelated change")
+        git(other, "push", "-q", "origin", "HEAD:main")
+        reaction, _ = wr.handle(self.req("undo", ts="1791100300.000100"), slack, LIVE)
+        self.assertEqual(reaction, "leftwards_arrow_with_hook")
+        self.assertIn("Old headline", self.origin_file("main", PAGE))
+        self.assertEqual(self.origin_file("main", "NOTES.md"), "pushed by someone else\n")
 
 
 class WordingTests(unittest.TestCase):

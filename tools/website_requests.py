@@ -497,6 +497,21 @@ def wait_live(sha: str, live_url: str, timeout: int = 9 * 60, poll: float = 5, o
     return False
 
 
+def sync_main():
+    """Start every request from the latest main (another run, or a person, may have pushed since)."""
+    sh("git", "fetch", "-q", "origin", "main", check=False)
+    sh("git", "merge", "-q", "--ff-only", "origin/main", check=False)
+
+
+def push_main():
+    """Push HEAD to main, rebasing onto anything pushed in the meantime (up to 3 tries)."""
+    for _ in range(3):
+        if sh("git", "push", "-q", "origin", "HEAD:main", check=False).returncode == 0:
+            return
+        sh("git", "pull", "-q", "--rebase", "origin", "main")
+    raise RuntimeError("push to main failed")
+
+
 def commit_and_ship(req: dict, summary: str, extra_trailers: str = "") -> str:
     msg = (f"Website request: {summary[:68]}\n\n{summary}\n\n"
            f"Requested-by: {req['requester']}\nSlack-Thread: {req['thread_ts']}\nSlack-Message: {req['ts']}\n"
@@ -504,12 +519,7 @@ def commit_and_ship(req: dict, summary: str, extra_trailers: str = "") -> str:
     sh("git", "add", "-A", "site")
     sh("git", "-c", "user.name=AscendPoint AI", "-c", "user.email=website-bot@ascendpoint.agency",
        "commit", "-q", "-m", msg)
-    for _ in range(3):
-        if sh("git", "push", "-q", "origin", "HEAD:main", check=False).returncode == 0:
-            break
-        sh("git", "pull", "-q", "--rebase", "origin", "main")
-    else:
-        raise RuntimeError("push to main failed")
+    push_main()
     sha = sh("git", "rev-parse", "HEAD").stdout.strip()
     sh("gh", "workflow", "run", "deploy.yml", "--ref", "main")
     return sha
@@ -642,12 +652,7 @@ def approve_preview(req: dict, live: str) -> tuple[str, str]:
         back_to_main()
         return "warning", ("⚠️ The previewed change no longer passes the site's checks, so nothing went live. "
                            f"<@{os.environ.get('WEBSITE_REQUESTS_OWNER', '')}> can take a look.")
-    for _ in range(3):
-        if sh("git", "push", "-q", "origin", "HEAD:main", check=False).returncode == 0:
-            break
-        sh("git", "pull", "-q", "--rebase", "origin", "main")
-    else:
-        raise RuntimeError("push to main failed")
+    push_main()
     sha = sh("git", "rev-parse", "HEAD").stdout.strip()
     sh("gh", "workflow", "run", "deploy.yml", "--ref", "main")
     sh("git", "push", "-q", "origin", "--delete", branch, check=False)
@@ -670,6 +675,7 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         return "no_entry_sign", ("🚫 I only act on emailed website requests from team addresses "
                                  f"({', '.join(sorted(email_domains()))}). Nothing was changed. "
                                  "Anyone on the team can post the request here instead.")
+    sync_main()
     pending = req["kind"] in ("followup", "undo") and preview_pending(req["thread_ts"])
     if pending:
         text = req.get("text") or ""
@@ -687,7 +693,7 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         if not ok:
             reset_worktree()
             return "warning", "I couldn't undo this cleanly, so I left the site as it is. Kyle has been flagged."
-        sh("git", "push", "-q", "origin", "HEAD:main")
+        push_main()
         sha = sh("git", "rev-parse", "HEAD").stdout.strip()
         sh("gh", "workflow", "run", "deploy.yml", "--ref", "main")
         live_ok = wait_live(sha, live)
