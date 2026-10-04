@@ -153,31 +153,24 @@ class PreviewFlowTests(unittest.TestCase):
         self.assertEqual(self.origin_file("kinsta-preview", "version.txt").strip(),
                          git(self.origin, "rev-parse", f"preview/{TS}"))
         self.assertEqual(self.origin_file("kinsta-preview", "env.txt"), "staging")              # noindex, no GA
-        self.assertIsNotNone(self.origin_file("kinsta-preview", "_preview/home-desktop.png"))
+        self.assertIsNone(self.origin_file("kinsta-preview", "_preview/home-desktop.png"))   # no screenshots
         self.assertIn(f"{PREVIEW_URL}/", text)
         self.assertIn("NOT live", text)
         self.assertIn("*approve*", text)
-        self.assertEqual(sorted(slack.uploads), ["home-desktop.png", "home-mobile.png"])
+        self.assertEqual(slack.uploads, [])                                                    # link only
+        self.assertFalse(any(m.startswith("files.") for m, _ in slack.calls))
+        self.assertNotIn("creenshot", text)
         self.assertEqual(self.gh, [])                                                            # no deploy
         self.assertEqual(git(self.work, "rev-parse", "--abbrev-ref", "HEAD"), "main")           # back on main
         self.assertEqual(git(self.work, "status", "--porcelain"), "")
 
-    def test_screenshots_linked_when_slack_app_cannot_upload(self):
-        slack = FakeSlack(files_write=False)
-        with self.claude_writes("New headline"):
-            reaction, text = wr.handle(self.req("Can I see a mockup before it goes live? Headline: New"),
-                                       slack, "https://ascendpoint.agency")
-        self.assertEqual(reaction, "mag")
-        self.assertIn(f"{PREVIEW_URL}/_preview/home-desktop.png", text)
-
-    def test_without_a_preview_site_screenshots_link_to_github(self):
-        slack = FakeSlack(files_write=False)
-        with mock.patch.dict(os.environ, {"PREVIEW_URL": "", "GITHUB_REPOSITORY": "ascendpoint/x"}), \
-                self.claude_writes("New headline"):
+    def test_without_a_preview_site_the_reply_says_so(self):
+        slack = FakeSlack()
+        with mock.patch.dict(os.environ, {"PREVIEW_URL": ""}), self.claude_writes("New headline"):
             reaction, text = wr.handle(self.req("preview first: headline New"), slack, LIVE)
         self.assertEqual(reaction, "mag")
-        self.assertIn("https://github.com/ascendpoint/x/blob/kinsta-preview/_preview/home-desktop.png", text)
-        self.assertIsNotNone(self.origin_file("kinsta-preview", "_preview/home-desktop.png"))
+        self.assertIn("isn't set up", text)
+        self.assertEqual(git(self.origin, "rev-parse", "main"), self.base)                    # still not live
 
     def test_tweak_updates_the_preview_then_approve_ships_exactly_it(self):
         slack = FakeSlack()

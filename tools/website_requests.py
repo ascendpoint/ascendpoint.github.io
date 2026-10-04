@@ -25,9 +25,9 @@ For each request the robot:
   5. replies in the thread with what changed + links, and reacts ✅ (or 💬 question / ⚠️ failed).
 
 Preview first ("preview", "send me a mockup", "show me before it goes live", ...): steps 4-5 become
-  4. commit on branch preview/<thread ts> (never main), screenshot the changed pages (desktop + mobile),
+  4. commit on branch preview/<thread ts> (never main),
      publish a staging build to branch kinsta-preview (Kinsta preview site PREVIEW_URL, noindex, no analytics),
-  5. reply with the preview links + screenshots and react 🔍. In that thread: "approve" (ship it, looks good,
+  5. reply with the preview link(s) and react 🔍. In that thread: "approve" (ship it, looks good,
      go live...) puts exactly that change live; any other reply updates the preview; "cancel" drops it 🗑️.
 
 Model per request: Haiku for short text-only edits, Sonnet for everyday edits, Opus for design/motion/new
@@ -39,7 +39,7 @@ Environment: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ANTHROPIC_API_KEY, GITHUB_TOKEN 
 optional WEBSITE_REQUESTS_START (unix ts; ignore older messages), WEBSITE_REQUESTS_ALLOWED
 (comma-separated Slack user IDs; empty = anyone in the channel), WEBSITE_REQUESTS_EMAIL_DOMAINS
 (comma-separated sender domains for email requests; default below), LIVE_URL, CLAUDE_MODEL(_SIMPLE/_ADVANCED),
-CLAUDE_MAX_USD(_SIMPLE/_ADVANCED), PREVIEW_URL (preview site; without it previews are screenshots only).
+CLAUDE_MAX_USD(_SIMPLE/_ADVANCED), PREVIEW_URL (the preview site; without it the reply says there's no link yet).
 Standard library only.
 """
 from __future__ import annotations
@@ -174,13 +174,6 @@ class Slack:
         if not out.get("ok") and out.get("error") not in ("already_reacted", "no_reaction"):
             raise RuntimeError(f"slack {method}: {out.get('error')} {out.get('needed', '')}".strip())
         return out
-
-    def upload(self, url: str, path: Path):
-        """POST a file to a Slack upload URL (files.getUploadURLExternal)."""
-        req = urllib.request.Request(url, data=path.read_bytes(), method="POST",
-                                     headers={"Content-Type": "application/octet-stream"})
-        with self.opener(req, timeout=120) as r:
-            r.read()
 
     def download(self, url: str, dest: Path):
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}"})
@@ -375,7 +368,7 @@ site/pages/<url>.html; the layout is site/_layout/; styles site/assets/css/site.
 Rules:
 - If the message just says "retry" / "try again", carry out the earlier request in the thread.
 - "Preview first" / "send me a mockup" / "staging" requests: just make the change. The robot publishes it to a
-  separate preview copy of the site, sends screenshots, and only puts it live when the requester approves.
+  separate preview copy of the site, sends the requester a link, and only puts it live when the requester approves.
 - Make the smallest correct change that does exactly what was asked, matching the existing design,
   tone and HTML patterns. Keep titles <= 60 chars and descriptions 70-170 chars when you touch them.
 - Never invent facts: no made-up numbers, prices, dates, quotes, names, credentials or claims. If the
@@ -420,8 +413,8 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
         + (f"\nEarlier messages in this Slack thread (oldest first):\n<<<\n{thread}\n>>>\n" if thread else "")
         + (f"\nAttached files in {FILES_DIR}: {', '.join(files)}\n" if files else "")
         + "\nDo what the request asks, following the rules."
-        + ("\nThis change will be shown to the requester as a PREVIEW (a separate preview copy of the site + "
-           "screenshots); nothing goes live until they approve it. So just make the change; never say you "
+        + ("\nThis change will be shown to the requester as a PREVIEW (a link to a separate preview copy of "
+           "the site); nothing goes live until they approve it. So just make the change; never say you "
            "can't do a preview or mockup." if preview else "")
     )
     if fix_log:
@@ -593,18 +586,13 @@ def back_to_main():
 def publish_preview(sha: str) -> str | None:
     """Rebuild with the preview commit and push the built site, as a single orphan commit, to the
     PREVIEW_BRANCH branch (the Kinsta preview site deploys it). Returns the preview base URL, or
-    None when PREVIEW_URL isn't configured (the reply then relies on the screenshots)."""
+    None when PREVIEW_URL isn't configured (the reply then says there's no link yet)."""
     url = (os.environ.get("PREVIEW_URL") or "").rstrip("/")
     # build.py stamps version.txt with $GITHUB_SHA when set, which inside the listener is the commit the
     # listener started from, not this preview: override it so the wait below can see the preview land.
     sh("python3", "tools/build.py", "--env", "staging", "--base-url", url or "https://preview.invalid",
        env=dict(os.environ, GITHUB_SHA=sha))
     dist = ROOT / "dist"
-    shots = Path("/tmp/website_request_preview_shots")
-    if shots.exists():                       # screenshots ride along, so links work without Slack uploads
-        (dist / "_preview").mkdir(exist_ok=True)
-        for p in shots.glob("*.png"):
-            shutil.copy2(p, dist / "_preview" / p.name)
     index = Path(tempfile.mkdtemp()) / "index"
     env = dict(os.environ, GIT_INDEX_FILE=str(index))
     sh("git", f"--work-tree={dist}", "add", "-A", "-f", ".", env=env)
@@ -614,35 +602,6 @@ def publish_preview(sha: str) -> str | None:
     shutil.rmtree(index.parent, ignore_errors=True)
     return url or None
 
-
-def take_screenshots(pages: list[str]) -> list[Path]:
-    """Desktop + mobile shots of up to 3 changed pages, from the local build."""
-    out = Path("/tmp/website_request_preview_shots")
-    shutil.rmtree(out, ignore_errors=True)
-    r = sh("python3", "tools/screenshot.py", *(pages[:3] or ["/"]), "--out", str(out), check=False, timeout=300)
-    if r.returncode != 0:
-        print("screenshots failed:", r.stdout[-500:], file=sys.stderr, flush=True)
-        return []
-    return sorted(out.glob("*.png"))
-
-
-def upload_shots(slack: Slack, req: dict, shots: list[Path]) -> bool:
-    """Attach the screenshots in the thread. Needs the Slack app's files:write scope; returns False
-    (and the reply links the copies on the preview site instead) when the app doesn't have it."""
-    if not shots:
-        return False
-    try:
-        ids = []
-        for p in shots:
-            up = slack.call("files.getUploadURLExternal", filename=p.name, length=str(p.stat().st_size))
-            slack.upload(up["upload_url"], p)
-            ids.append({"id": up["file_id"], "title": p.stem.replace("-", " ")})
-        slack.call("files.completeUploadExternal", files=json.dumps(ids), channel_id=req["channel"],
-                   thread_ts=req["thread_ts"], initial_comment="Preview screenshots (desktop + mobile):")
-        return True
-    except Exception as e:
-        print("screenshot upload skipped:", e, file=sys.stderr, flush=True)
-        return False
 
 
 def approve_preview(req: dict, live: str) -> tuple[str, str]:
@@ -789,22 +748,14 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
 
     if preview:
         sha = commit_preview(req, summary)
-        shots = take_screenshots(pages)
         url = publish_preview(sha)
         preview_ok = wait_live(sha, url, timeout=6 * 60) if url else False
-        uploaded = upload_shots(slack, req, shots)
         lines = [f"🔍 Preview ready (NOT live yet): {summary}"]
         if url:
             lines.append(links(pages, url) + ("" if preview_ok else
                          "\n_(The preview site is still publishing; give it a minute if a link shows the old page.)_"))
-        if shots and not uploaded:
-            repo = os.environ.get("GITHUB_REPOSITORY")
-            base = (f"{url}/_preview" if url else
-                    f"https://github.com/{repo}/blob/{PREVIEW_BRANCH}/_preview" if repo else None)
-            if base:
-                lines.append("Screenshots: " + " · ".join(f"<{base}/{p.name}|{p.stem}>" for p in shots))
-        elif not shots and not url:
-            lines.append("_(I couldn't make screenshots this time; reply *approve* to see it live, or ask again.)_")
+        else:
+            lines.append("_(The preview site isn't set up, so there's no link to share yet.)_")
         lines.append("_Reply *approve* to put this live, reply with changes to update the preview, "
                      "or *cancel* to drop it._")
         lines.append(f"_{footer}_")
@@ -837,7 +788,7 @@ def claim(slack: Slack, channel: str, req: dict):
         if req["kind"] == "followup" and (APPROVE_RE.match(text) or CANCEL_RE.match(text)):
             return                                     # approve / cancel: the outcome reply is enough
         mins = "2 to 4" if tier != "advanced" or req["kind"] == "undo" else "5 to 15"
-        later = (f"I'll reply here with a preview (screenshots + link) in about {mins} minutes. Nothing goes live "
+        later = (f"I'll reply here with a preview link in about {mins} minutes. Nothing goes live "
                  "until you approve it." if wants_preview(req) else
                  f"I'll reply here when it's live (usually {mins} minutes).")
         text = (f"👀 On it. {later}" if tier != "advanced" or req["kind"] == "undo" else

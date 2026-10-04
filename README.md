@@ -47,11 +47,11 @@ as failed.
 **Preview before it goes live.** Say so in the request ("preview first", "send me a mockup", "show me before
 it goes live", "staging"). The robot makes the change on branch `preview/<thread>` (never `main`), publishes a
 staging build (noindex, no analytics) to branch `kinsta-preview`, which the Kinsta preview site (`PREVIEW_URL`)
-serves, and replies 🔍 with preview links plus desktop + mobile screenshots. In that thread: **approve** (or
+serves, and replies 🔍 with the preview link (no screenshots). In that thread: **approve** (or
 "ship it", "looks good", "go live", "yes") puts exactly that change live; any other reply updates the preview;
 **cancel** drops it 🗑️. The preview site (https://ascendpoint-preview-nwyxk.kinsta.page, Sevalla static site
-`ascendpoint-preview`) always shows the most recent preview. Screenshots are attached in Slack (the app has
-`files:write` since Oct 4; without it they're linked from the preview site). If a thread's first message asked
+`ascendpoint-preview`) always shows the most recent preview.
+No preview is made unless the request asks for one: everything else goes straight live as before. If a thread's first message asked
 for a preview, later replies in it stay previews until something from the thread is approved.
 
 For anything visual the robot builds the site and screenshots it on desktop and mobile
@@ -71,7 +71,7 @@ Settings (GitHub → Settings → Secrets and variables → Actions): secrets `A
 key from the Claude Console, ideally in its own workspace "AscendPoint website robot" so Usage/Cost shows
 exactly what the robot spends; typically $0.20 to $1 per request, also printed in each ✅ reply) and `SLACK_BOT_TOKEN` (the AscendPoint AI
 Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`, `reactions:write`,
-`users:read`, `files:read`, plus `files:write` to attach preview screenshots; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
+`users:read`, `files:read`; `files:write` is granted but no longer used; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
 (comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
 to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3), `CLAUDE_MODEL_ADVANCED` (default `opus`),
