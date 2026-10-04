@@ -24,12 +24,22 @@ For each request the robot:
      https://ascendpoint.agency/version.txt shows the new commit,
   5. replies in the thread with what changed + links, and reacts ✅ (or 💬 question / ⚠️ failed).
 
+Preview first ("preview", "send me a mockup", "show me before it goes live", ...): steps 4-5 become
+  4. commit on branch preview/<thread ts> (never main), screenshot the changed pages (desktop + mobile),
+     publish a staging build to branch kinsta-preview (Kinsta preview site PREVIEW_URL, noindex, no analytics),
+  5. reply with the preview links + screenshots and react 🔍. In that thread: "approve" (ship it, looks good,
+     go live...) puts exactly that change live; any other reply updates the preview; "cancel" drops it 🗑️.
+
+Model per request: Haiku for short text-only edits, Sonnet for everyday edits, Opus for design/motion/new
+pages (see choose_model); Haiku falls back to Sonnet, and Opus repairs anything that fails the checks.
+
 State lives in Slack reactions: a message the bot has reacted to is never picked up again.
 
 Environment: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ANTHROPIC_API_KEY, GITHUB_TOKEN (Actions),
 optional WEBSITE_REQUESTS_START (unix ts; ignore older messages), WEBSITE_REQUESTS_ALLOWED
 (comma-separated Slack user IDs; empty = anyone in the channel), WEBSITE_REQUESTS_EMAIL_DOMAINS
-(comma-separated sender domains for email requests; default below), LIVE_URL, CLAUDE_MODEL.
+(comma-separated sender domains for email requests; default below), LIVE_URL, CLAUDE_MODEL(_SIMPLE/_ADVANCED),
+CLAUDE_MAX_USD(_SIMPLE/_ADVANCED), PREVIEW_URL (preview site; without it previews are screenshots only).
 Standard library only.
 """
 from __future__ import annotations
@@ -37,8 +47,10 @@ from __future__ import annotations
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
+import tempfile
 import time
 import urllib.parse
 import urllib.request
@@ -47,23 +59,49 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parent.parent
 SLACK = "https://slack.com/api/"
 HANDLED = {"eyes", "white_check_mark", "warning", "speech_balloon", "leftwards_arrow_with_hook",
-           "no_entry_sign"}
+           "no_entry_sign", "mag", "wastebasket"}       # 🔍 preview ready, 🗑️ preview dropped
 MAX_AGE = 2 * 24 * 3600          # never pick up anything older than 2 days
 UNDO_RE = re.compile(r"^\W*(undo|revert|roll ?back)\b", re.I)
+# "Show me first": the change goes to a preview copy of the site, and only goes live on "approve".
+PREVIEW_RE = re.compile(
+    r"\b(preview|mock-?ups?|staging|stage it|sneak peek|"
+    r"(see|show me|send me|look at)\b[^.?!\n]{0,40}\b(before|first)\b|"
+    r"before (it|this|that|you|we|anything)\b[^.?!\n]{0,30}\b(live|publish\w*|push\w*)|"
+    r"(approve|sign off|review)\b[^.?!\n]{0,20}\bfirst\b|"
+    r"(don'?t|do not|hold off)\b[^.?!\n]{0,30}\b(live|publish\w*|push\w*))", re.I)
+APPROVE_RE = re.compile(
+    r"^\W*(approved?|approve it|ship it|looks? (good|great)|lgtm|go live|go ahead|publish( it)?|"
+    r"(push|put|make|send|take) it live|perfect|love it|yes\b(?![^.!?\n]*\b(but|change|make|move|can)\b))", re.I)
+CANCEL_RE = re.compile(r"^\W*(cancel|discard|scrap( it| that)?|never ?mind|drop it|forget it)\b", re.I)
+PREVIEW_PREFIX = "preview/"      # source of a pending preview: branch preview/<thread ts>
+PREVIEW_BRANCH = "kinsta-preview"  # built preview site (Kinsta static site PREVIEW_URL deploys this branch)
+SITE_DIR = "site/"               # the only place the robot may change anything
+GIT_USER = ("-c", "user.name=AscendPoint AI", "-c", "user.email=website-bot@ascendpoint.agency")
 IGNORE_RE = re.compile(r"^\s*(//|note:|fyi\b)", re.I)
 EMAIL_PREFIX = "📧"
 RESULT = Path("/tmp/website_request_result.json")
 FILES_DIR = Path("/tmp/website_request_files")
 BOT_NAME = "AscendPoint AI"
-# Model routing: everyday edits use CLAUDE_MODEL (default Sonnet: fast, ~$0.05-0.30); design/motion/
-# interactive/new-page work uses CLAUDE_MODEL_ADVANCED (default Opus). Anyone can force it in the
-# message: "[opus]", "use opus", "best model", "try harder" / "[sonnet]" / "[haiku]".
+# Model routing, cheapest model that can do the job well:
+#   simple   (CLAUDE_MODEL_SIMPLE, default Haiku: ~1/3 the price of Sonnet) short text-only edits: a typo, a
+#            phone number, a date, a one-line wording swap. If it doesn't manage it, Sonnet redoes it; if its
+#            change fails the checks, Opus repairs it.
+#   standard (CLAUDE_MODEL, default Sonnet) everyday edits.
+#   advanced (CLAUDE_MODEL_ADVANCED, default Opus) design/motion/interactive/new-page work.
+# Anyone can force it in the message: "[opus]", "use opus", "best model", "try harder" / "[sonnet]" / "[haiku]".
 ADVANCED_RE = re.compile(
     r"\b(animat\w*|motion|movement|moving|scroll\w*|parallax|fade[- ]?in|slide[- ]?in|carousel|slider|"
     r"marquee|ticker|hover (effect|state|animation)s?|interactive|javascript|redesign|re-design|"
     r"new page|(create|build|design) (a |an )?(new )?(page|section|layout)|add (a |an )?(new )?section|"
     r"landing page|layout|form|video|count(er|[- ]up)|typewriter|3d|sticky|modal|pop-?up|accordion|"
-    r"mega ?menu|dark mode|make it (pop|feel|look) (more )?(modern|premium|dynamic|alive))\b", re.I)
+    r"mega ?menu|dark mode|make it (pop|feel|look) (more )?(modern|premium|dynamic|alive)|"
+    r"looks? (bad|off|cluttered|messy|dated|busy|weird)|clean(er)? (look|design)|look(s)? cleaner)\b", re.I)
+SIMPLE_RE = re.compile(
+    r"\b(typo|spelling|misspel\w*|spelled|phone( number)?|email address|address|hours|date|year|"
+    r"price|wording|word|reword|rephrase|replace|swap|rename|capitali[sz]\w*|lower ?case|upper ?case|"
+    r"(change|update|fix|edit) (the |this |that )?(text|copy|title|headline|heading|subheading|label|"
+    r"button( text)?|link|name|caption|sentence|line|phrase|bio|wording))\b", re.I)
+SIMPLE_MAX_CHARS = 300
 FORCE_RE = re.compile(r"\[(opus|sonnet|haiku)\]|\buse (opus|sonnet|haiku)\b|"
                       r"\b(best|smartest|most advanced|strongest) model\b|\btry harder\b", re.I)
 MODEL_NAMES = {"opus": "Claude Opus", "sonnet": "Claude Sonnet", "haiku": "Claude Haiku"}
@@ -74,25 +112,34 @@ def model_name(model: str) -> str:
 
 
 def choose_model(req: dict) -> tuple[str, str]:
-    """(model, tier) for a request: tier is "advanced" or "standard"."""
+    """(model, tier) for a request: tier is "simple", "standard" or "advanced"."""
+    simple = os.environ.get("CLAUDE_MODEL_SIMPLE") or "haiku"
     basic = os.environ.get("CLAUDE_MODEL") or "sonnet"
     advanced = os.environ.get("CLAUDE_MODEL_ADVANCED") or "opus"
-    texts = [req.get("text") or ""] + list(reversed(req.get("context") or []))   # newest first
+    text = req.get("text") or ""
+    texts = [text] + list(reversed(req.get("context") or []))   # newest first
     for t in texts:
         m = FORCE_RE.search(t)
         if m:
             word = (m.group(1) or m.group(2) or "").lower()
-            if word in ("sonnet", "haiku"):
-                return word, "standard"
+            if word == "haiku":
+                return simple, "simple"
+            if word == "sonnet":
+                return basic, "standard"
             return advanced, "advanced"
     if any(ADVANCED_RE.search(t) for t in texts):
         return advanced, "advanced"
+    if (req.get("kind") == "new" and not req.get("files") and len(text) <= SIMPLE_MAX_CHARS
+            and SIMPLE_RE.search(text)):
+        return simple, "simple"
     return basic, "standard"
 
 
 def budget(tier: str) -> str:
     if tier == "advanced":
         return os.environ.get("CLAUDE_MAX_USD_ADVANCED") or "10"
+    if tier == "simple":
+        return os.environ.get("CLAUDE_MAX_USD_SIMPLE") or "1"
     return os.environ.get("CLAUDE_MAX_USD") or "3"
 
 
@@ -127,6 +174,13 @@ class Slack:
         if not out.get("ok") and out.get("error") not in ("already_reacted", "no_reaction"):
             raise RuntimeError(f"slack {method}: {out.get('error')} {out.get('needed', '')}".strip())
         return out
+
+    def upload(self, url: str, path: Path):
+        """POST a file to a Slack upload URL (files.getUploadURLExternal)."""
+        req = urllib.request.Request(url, data=path.read_bytes(), method="POST",
+                                     headers={"Content-Type": "application/octet-stream"})
+        with self.opener(req, timeout=120) as r:
+            r.read()
 
     def download(self, url: str, dest: Path):
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}"})
@@ -320,6 +374,8 @@ site/pages/<url>.html; the layout is site/_layout/; styles site/assets/css/site.
 
 Rules:
 - If the message just says "retry" / "try again", carry out the earlier request in the thread.
+- "Preview first" / "send me a mockup" / "staging" requests: just make the change. The robot publishes it to a
+  separate preview copy of the site, sends screenshots, and only puts it live when the requester approves.
 - Make the smallest correct change that does exactly what was asked, matching the existing design,
   tone and HTML patterns. Keep titles <= 60 chars and descriptions 70-170 chars when you touch them.
 - Never invent facts: no made-up numbers, prices, dates, quotes, names, credentials or claims. If the
@@ -353,7 +409,7 @@ Rules:
 
 
 def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
-               fix_log: str | None = None) -> dict:
+               fix_log: str | None = None, preview: bool = False) -> dict:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     RESULT.unlink(missing_ok=True)
     thread = "\n".join(req.get("context") or [])
@@ -364,6 +420,9 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
         + (f"\nEarlier messages in this Slack thread (oldest first):\n<<<\n{thread}\n>>>\n" if thread else "")
         + (f"\nAttached files in {FILES_DIR}: {', '.join(files)}\n" if files else "")
         + "\nDo what the request asks, following the rules."
+        + ("\nThis change will be shown to the requester as a PREVIEW (a separate preview copy of the site + "
+           "screenshots); nothing goes live until they approve it. So just make the change; never say you "
+           "can't do a preview or mockup." if preview else "")
     )
     if fix_log:
         prompt += ("\n\nYour change for this request is already in the working tree, but it FAILED the site's "
@@ -413,6 +472,12 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
 LIVE_UA = "Mozilla/5.0 (compatible; AscendPointAI-website-robot/1.0; +https://ascendpoint.agency)"
 
 
+def same_commit(version_txt: str, sha: str) -> bool:
+    """version.txt holds a (usually short) commit id, maybe followed by a date; sha is a full id."""
+    v, sha = (version_txt.split() or [""])[0].strip().lower(), sha.strip().lower()
+    return min(len(v), len(sha)) >= 6 and (sha.startswith(v) or v.startswith(sha))
+
+
 def wait_live(sha: str, live_url: str, timeout: int = 9 * 60, poll: float = 5, opener=None,
               sleep=time.sleep, clock=time.time) -> bool:
     """True once {live_url}/version.txt shows `sha`. The host blocks the default Python
@@ -424,7 +489,7 @@ def wait_live(sha: str, live_url: str, timeout: int = 9 * 60, poll: float = 5, o
         req = urllib.request.Request(url, headers={"User-Agent": LIVE_UA, "Cache-Control": "no-cache"})
         try:
             with opener(req, timeout=20) as r:
-                if r.read().decode().strip().startswith(sha):
+                if same_commit(r.read().decode(), sha):
                     return True
         except Exception as e:
             print("live check:", e, file=sys.stderr, flush=True)
@@ -471,19 +536,153 @@ def drop_outside_site() -> list[str]:
     return changed_files() if outside else files
 
 
+def wants_preview(req: dict) -> bool:
+    """The requester asked to see it before it goes live ("preview first", "send me a mockup", ...)."""
+    return bool(PREVIEW_RE.search(req.get("text") or ""))
+
+
+def preview_branch(thread_ts: str) -> str:
+    return PREVIEW_PREFIX + thread_ts
+
+
+def preview_pending(thread_ts: str) -> bool:
+    """A preview for this thread is waiting for approval (its branch exists on origin)."""
+    return sh("git", "ls-remote", "--exit-code", "--heads", "origin", preview_branch(thread_ts),
+              check=False).returncode == 0
+
+
+def start_preview_tree(thread_ts: str, pending: bool):
+    """Work on the thread's preview branch (or a fresh one from main): nothing here touches main."""
+    sh("git", "fetch", "-q", "origin", "main")
+    if pending:
+        sh("git", "fetch", "-q", "origin", f"{preview_branch(thread_ts)}")
+        sh("git", "checkout", "-q", "-B", "preview-work", "FETCH_HEAD")
+    else:
+        sh("git", "checkout", "-q", "-B", "preview-work", "origin/main")
+
+
+def back_to_main():
+    reset_worktree()
+    sh("git", "checkout", "-q", "-f", "main", check=False)
+    sh("git", "reset", "-q", "--hard", "origin/main", check=False)
+
+
+def publish_preview(sha: str) -> str | None:
+    """Rebuild with the preview commit and push the built site, as a single orphan commit, to the
+    PREVIEW_BRANCH branch (the Kinsta preview site deploys it). Returns the preview base URL, or
+    None when PREVIEW_URL isn't configured (the reply then relies on the screenshots)."""
+    url = (os.environ.get("PREVIEW_URL") or "").rstrip("/")
+    sh("python3", "tools/build.py", "--env", "staging", "--base-url", url or "https://preview.invalid")
+    dist = ROOT / "dist"
+    shots = Path("/tmp/website_request_preview_shots")
+    if shots.exists():                       # screenshots ride along, so links work without Slack uploads
+        (dist / "_preview").mkdir(exist_ok=True)
+        for p in shots.glob("*.png"):
+            shutil.copy2(p, dist / "_preview" / p.name)
+    index = Path(tempfile.mkdtemp()) / "index"
+    env = dict(os.environ, GIT_INDEX_FILE=str(index))
+    sh("git", f"--work-tree={dist}", "add", "-A", "-f", ".", env=env)
+    tree = sh("git", "write-tree", env=env).stdout.strip()
+    commit = sh("git", *GIT_USER, "commit-tree", tree, "-m", f"Preview build of {sha[:7]}").stdout.strip()
+    sh("git", "push", "-q", "-f", "origin", f"{commit}:refs/heads/{PREVIEW_BRANCH}")
+    shutil.rmtree(index.parent, ignore_errors=True)
+    return url or None
+
+
+def take_screenshots(pages: list[str]) -> list[Path]:
+    """Desktop + mobile shots of up to 3 changed pages, from the local build."""
+    out = Path("/tmp/website_request_preview_shots")
+    shutil.rmtree(out, ignore_errors=True)
+    r = sh("python3", "tools/screenshot.py", *(pages[:3] or ["/"]), "--out", str(out), check=False, timeout=300)
+    if r.returncode != 0:
+        print("screenshots failed:", r.stdout[-500:], file=sys.stderr, flush=True)
+        return []
+    return sorted(out.glob("*.png"))
+
+
+def upload_shots(slack: Slack, req: dict, shots: list[Path]) -> bool:
+    """Attach the screenshots in the thread. Needs the Slack app's files:write scope; returns False
+    (and the reply links the copies on the preview site instead) when the app doesn't have it."""
+    if not shots:
+        return False
+    try:
+        ids = []
+        for p in shots:
+            up = slack.call("files.getUploadURLExternal", filename=p.name, length=str(p.stat().st_size))
+            slack.upload(up["upload_url"], p)
+            ids.append({"id": up["file_id"], "title": p.stem.replace("-", " ")})
+        slack.call("files.completeUploadExternal", files=json.dumps(ids), channel_id=req["channel"],
+                   thread_ts=req["thread_ts"], initial_comment="Preview screenshots (desktop + mobile):")
+        return True
+    except Exception as e:
+        print("screenshot upload skipped:", e, file=sys.stderr, flush=True)
+        return False
+
+
+def approve_preview(req: dict, live: str) -> tuple[str, str]:
+    """Put the thread's previewed change live, exactly as previewed."""
+    branch = preview_branch(req["thread_ts"])
+    sh("git", "checkout", "-q", "-f", "main", check=False)
+    sh("git", "fetch", "-q", "origin", "main", branch)
+    sh("git", "reset", "-q", "--hard", "origin/main")
+    head = sh("git", "rev-parse", f"origin/{branch}", check=False).stdout.strip() or \
+        sh("git", "ls-remote", "origin", branch).stdout.split()[0]
+    base = sh("git", "merge-base", "origin/main", head).stdout.strip()
+    commits = sh("git", "rev-list", "--reverse", f"{base}..{head}").stdout.split()
+    if not commits:
+        return "speech_balloon", "There's no previewed change in this thread to put live."
+    for c in commits:
+        if sh("git", *GIT_USER, "cherry-pick", "-x", c, check=False).returncode != 0:
+            sh("git", "cherry-pick", "--abort", check=False)
+            reset_worktree()
+            return "warning", ("⚠️ The live site changed since this preview was made and the two clash, so I left "
+                               "the site as it is. Reply with the request again and I'll redo it on the current site.")
+    ok, log = checks()
+    if not ok:
+        back_to_main()
+        return "warning", ("⚠️ The previewed change no longer passes the site's checks, so nothing went live. "
+                           f"<@{os.environ.get('WEBSITE_REQUESTS_OWNER', '')}> can take a look.")
+    for _ in range(3):
+        if sh("git", "push", "-q", "origin", "HEAD:main", check=False).returncode == 0:
+            break
+        sh("git", "pull", "-q", "--rebase", "origin", "main")
+    else:
+        raise RuntimeError("push to main failed")
+    sha = sh("git", "rev-parse", "HEAD").stdout.strip()
+    sh("gh", "workflow", "run", "deploy.yml", "--ref", "main")
+    sh("git", "push", "-q", "origin", "--delete", branch, check=False)
+    live_ok = wait_live(sha, live)
+    files = sh("git", "diff", "--name-only", f"{base}..HEAD").stdout.split()
+    pages = sorted({u for u in map(url_for, files) if u})
+    note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
+    return "white_check_mark", (f"✅ Live: the previewed change is on the site now.\n{links(pages, live)}{note}\n"
+                                "_Reply *undo* here to roll it back._")
+
+
+def cancel_preview(req: dict) -> tuple[str, str]:
+    sh("git", "push", "-q", "origin", "--delete", preview_branch(req["thread_ts"]), check=False)
+    return "wastebasket", "🗑️ Dropped the preview. Nothing went live."
+
+
 def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
     """Returns (reaction, reply text)."""
     if req["kind"] == "blocked":
         return "no_entry_sign", ("🚫 I only act on emailed website requests from team addresses "
                                  f"({', '.join(sorted(email_domains()))}). Nothing was changed. "
                                  "Anyone on the team can post the request here instead.")
+    pending = req["kind"] in ("followup", "undo") and preview_pending(req["thread_ts"])
+    if pending:
+        text = req.get("text") or ""
+        if APPROVE_RE.match(text):
+            return approve_preview(req, live)
+        if CANCEL_RE.match(text) or (req["kind"] == "undo" and not thread_commits(req["thread_ts"])):
+            return cancel_preview(req)
     if req["kind"] == "undo":
         commits = thread_commits(req["thread_ts"])
         if not commits:
             return "speech_balloon", "There's nothing from this thread live to undo."
         for c in commits:  # newest first
-            sh("git", "-c", "user.name=AscendPoint AI", "-c", "user.email=website-bot@ascendpoint.agency",
-               "revert", "--no-edit", c)
+            sh("git", *GIT_USER, "revert", "--no-edit", c)
         ok, log = checks()
         if not ok:
             reset_worktree()
@@ -496,15 +695,33 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
                 "↩️ Undone. The site is back to how it was before this thread's change."
                 + ("" if live_ok else " (Publishing is taking longer than usual; it should show within a few minutes.)"))
 
+    preview = pending or wants_preview(req)
+    if preview:
+        start_preview_tree(req["thread_ts"], pending)
+    try:
+        return make_change(req, slack, live, preview)
+    finally:
+        if preview:
+            back_to_main()
+
+
+def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str, str]:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
     for i, f in enumerate(req.get("files", [])):
         name = re.sub(r"[^A-Za-z0-9._-]+", "-", f.get("name") or f"file-{i}")
         slack.download(f["url"], FILES_DIR / name)
 
     model, tier = choose_model(req)
-    result = run_claude(req, model, budget(tier))
+    result = run_claude(req, model, budget(tier), preview=preview)
     spent = [result.get("cost_usd")]
     files = drop_outside_site()
+    if tier == "simple" and result.get("status") != "error" and (not files or result.get("status") == "no_change"):
+        # the cheap model didn't manage it: try once more with the everyday model
+        reset_worktree()
+        model, tier = os.environ.get("CLAUDE_MODEL") or "sonnet", "standard"
+        result = run_claude(req, model, budget(tier), preview=preview)
+        spent.append(result.get("cost_usd"))
+        files = drop_outside_site()
 
     if result.get("status") == "error":
         reset_worktree()
@@ -522,7 +739,8 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
     fixed_by = None
     if not ok:  # one automatic repair pass with the advanced model, given the exact check failures
         fix_model = os.environ.get("CLAUDE_MODEL_ADVANCED") or "opus"
-        fix = run_claude(req, fix_model, budget("advanced"), fix_log="\n".join(log.strip().splitlines()[-40:]))
+        fix = run_claude(req, fix_model, budget("advanced"), fix_log="\n".join(log.strip().splitlines()[-40:]),
+                         preview=preview)
         spent.append(fix.get("cost_usd"))
         files = drop_outside_site()
         if fix.get("status") != "error" and files:
@@ -540,17 +758,48 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
 
     summary = result.get("summary") or "Updated the website."
     pages = result.get("pages") or sorted({u for u in map(url_for, files) if u})
-    sha = commit_and_ship(req, summary)
-    live_ok = wait_live(sha, live)
     cost = sum(c for c in spent if isinstance(c, (int, float)))
-    note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
-    footer = model_name(model) + (" (advanced request)" if tier == "advanced" else "")
+    footer = model_name(model) + {"advanced": " (advanced request)", "simple": " (simple request)"}.get(tier, "")
     if fixed_by:
         footer += f" · {model_name(fixed_by)} auto-fixed a failing check"
     if any(isinstance(c, (int, float)) for c in spent):
         footer += f" · ${cost:.2f}"
+
+    if preview:
+        sha = commit_preview(req, summary)
+        shots = take_screenshots(pages)
+        url = publish_preview(sha)
+        preview_ok = wait_live(sha, url, timeout=6 * 60) if url else False
+        uploaded = upload_shots(slack, req, shots)
+        lines = [f"🔍 Preview ready (NOT live yet): {summary}"]
+        if url:
+            lines.append(links(pages, url) + ("" if preview_ok else
+                         "\n_(The preview site is still publishing; give it a minute if a link shows the old page.)_"))
+        if shots and not uploaded:
+            if url:
+                lines.append("Screenshots: " + " · ".join(f"<{url}/_preview/{p.name}|{p.stem}>" for p in shots))
+        elif not shots and not url:
+            lines.append("_(I couldn't make screenshots this time; reply *approve* to see it live, or ask again.)_")
+        lines.append("_Reply *approve* to put this live, reply with changes to update the preview, "
+                     "or *cancel* to drop it._")
+        lines.append(f"_{footer}_")
+        return "mag", "\n".join(lines)
+
+    sha = commit_and_ship(req, summary)
+    live_ok = wait_live(sha, live)
+    note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
     return "white_check_mark", (f"✅ Live: {summary}\n{links(pages, live)}{note}\n"
                                 f"_Reply *undo* here to roll it back, or reply with tweaks._\n_{footer}_")
+
+
+def commit_preview(req: dict, summary: str) -> str:
+    """Commit on the thread's preview branch (never main) and push it."""
+    msg = (f"Website request: {summary[:68]}\n\n{summary}\n\n"
+           f"Requested-by: {req['requester']}\nSlack-Thread: {req['thread_ts']}\nSlack-Message: {req['ts']}\n")
+    sh("git", "add", "-A", "--", SITE_DIR)
+    sh("git", *GIT_USER, "commit", "-q", "-m", msg)
+    sh("git", "push", "-q", "-f", "origin", f"HEAD:refs/heads/{preview_branch(req['thread_ts'])}")
+    return sh("git", "rev-parse", "HEAD").stdout.strip()
 
 
 # ----------------------------------------------------------------------------- CLI
@@ -559,10 +808,14 @@ def claim(slack: Slack, channel: str, req: dict):
     slack.call("reactions.add", channel=channel, timestamp=req["ts"], name="eyes")
     if req["kind"] != "blocked":
         model, tier = choose_model(req)
-        text = ("👀 On it. I'll reply here when it's live (usually 2 to 4 minutes)." if tier == "standard" or
-                req["kind"] == "undo" else
+        text = req.get("text") or ""
+        if req["kind"] == "followup" and (APPROVE_RE.match(text) or CANCEL_RE.match(text)):
+            return                                     # approve / cancel: the outcome reply is enough
+        later = ("I'll reply here with a preview link and screenshots (nothing goes live until you approve)"
+                 if wants_preview(req) else "I'll reply here when it's live")
+        text = (f"👀 On it. {later} (usually 2 to 4 minutes)." if tier != "advanced" or req["kind"] == "undo" else
                 f"👀 On it. This is a design/advanced change, so I'm using {model_name(model)} and checking it "
-                "visually on desktop and mobile. I'll reply here when it's live (usually 5 to 15 minutes).")
+                f"visually on desktop and mobile. {later} (usually 5 to 15 minutes).")
         slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"], text=text)
 
 

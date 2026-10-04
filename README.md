@@ -32,34 +32,47 @@ What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 
 Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
 
-**Two models, picked per request.** Everyday edits (text, links, photos, removing things) use Claude Sonnet:
-fast and cheap (typically 20-60 s of work, $0.05-0.30). Design, motion and interactive work (animation,
-"movement", on-scroll effects, hover effects, carousels, new pages or sections, layout/redesign, forms) uses
-Claude Opus with a higher cap. A follow-up in that thread stays on Opus. Force it either way by writing
-`[opus]`, "use the best model" or "try harder" (or `[sonnet]`) in the message. If a change fails the site
-checks, Opus gets one automatic repair pass with the exact errors before anything is reported as failed.
+**Three models, picked per request (cheapest that does the job well).** Short text-only edits (a typo, a
+phone number, a date, a one-line wording swap) use Claude Haiku: a fraction of Sonnet's cost. Everyday edits
+(text, links, photos, removing things) use Claude Sonnet: fast and cheap (typically 20-60 s of work,
+$0.05-0.30). Design, motion and interactive work (animation, "movement", on-scroll effects, hover effects,
+carousels, new pages or sections, layout/redesign, forms, "this looks bad") uses Claude Opus with a higher cap.
+A follow-up in that thread stays on Opus. If Haiku doesn't manage a change, Sonnet redoes it. Force a model by
+writing `[opus]`, "use the best model" or "try harder" (or `[sonnet]` / `[haiku]`) in the message. If a change
+fails the site checks, Opus gets one automatic repair pass with the exact errors before anything is reported
+as failed.
+
+**Preview before it goes live.** Say so in the request ("preview first", "send me a mockup", "show me before
+it goes live", "staging"). The robot makes the change on branch `preview/<thread>` (never `main`), publishes a
+staging build (noindex, no analytics) to branch `kinsta-preview`, which the Kinsta preview site (`PREVIEW_URL`)
+serves, and replies 🔍 with preview links plus desktop + mobile screenshots. In that thread: **approve** (or
+"ship it", "looks good", "go live", "yes") puts exactly that change live; any other reply updates the preview;
+**cancel** drops it 🗑️. The preview site always shows the most recent preview. Screenshots are attached in
+Slack when the Slack app has the `files:write` scope, otherwise linked from the preview site.
+
 For anything visual the robot builds the site and screenshots it on desktop and mobile
 (`tools/screenshot.py`, headless Chromium; frames over time for animation, hover and on-scroll states) and
 must look at the result before it publishes. The ✅ reply names the model used and the cost.
 
 How it works: `.github/workflows/website-requests.yml` keeps one listener running in GitHub Actions
-(polls Slack every 10 s for ~5.7 h; cron restarts it every 15 min; free on a public repo; no one's
+(polls Slack every 10 s for ~5.7 h, then starts its successor; the 15-minute cron is a backup; free on a public repo; no one's
 computer needs to be on). Email lands in the channel instantly, so it is picked up the same way and `tools/website_requests.py` does the work: Claude Code in
 headless mode with a tight tool allowlist (edit `site/` only, run the build; no git, no web, no shell),
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
-`/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 💬 question, ⚠️ failed,
-↩️ undone, 🚫 refused email). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
+`/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 🔍 preview waiting for approval, 🗑️ preview
+dropped, 💬 question, ⚠️ failed, ↩️ undone, 🚫 refused email). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
 
 Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
 key from the Claude Console, ideally in its own workspace "AscendPoint website robot" so Usage/Cost shows
 exactly what the robot spends; typically $0.20 to $1 per request, also printed in each ✅ reply) and `SLACK_BOT_TOKEN` (the AscendPoint AI
 Slack app's bot token: scopes `channels:history`, `chat:write`, `reactions:read`, `reactions:write`,
-`users:read`, `files:read`; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
+`users:read`, `files:read`, plus `files:write` to attach preview screenshots; the app must be in the channel); variables `SLACK_CHANNEL_ID`,
 `WEBSITE_REQUESTS_START` (ignore messages before this unix time), optional `WEBSITE_REQUESTS_ALLOWED`
 (comma-separated Slack user IDs; empty = anyone in the channel), `WEBSITE_REQUESTS_OWNER` (Slack user ID
 to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (default 3), `CLAUDE_MODEL_ADVANCED` (default `opus`),
-`CLAUDE_MAX_USD_ADVANCED` (default 10),
+`CLAUDE_MAX_USD_ADVANCED` (default 10), `CLAUDE_MODEL_SIMPLE` (default `haiku`), `CLAUDE_MAX_USD_SIMPLE` (default 1),
+`PREVIEW_URL` (the Kinsta preview site serving branch `kinsta-preview`),
 `ANTHROPIC_WORKSPACE_ID` (Claude Console workspace to bill; required when the API key is organization-level,
 not created inside a workspace: Oct 2 2026 = Default workspace wrkspc_01AphpFe2Yxf9FqUWDUssPN6 of the
 Claude Console org Kyle created for the robot), `WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,

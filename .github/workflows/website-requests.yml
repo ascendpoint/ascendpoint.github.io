@@ -47,6 +47,9 @@ jobs:
       CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
       CLAUDE_MODEL_ADVANCED: ${{ vars.CLAUDE_MODEL_ADVANCED }}     # design/motion/new-page work (default opus)
       CLAUDE_MAX_USD_ADVANCED: ${{ vars.CLAUDE_MAX_USD_ADVANCED }} # cap per advanced request (default 10)
+      CLAUDE_MODEL_SIMPLE: ${{ vars.CLAUDE_MODEL_SIMPLE }}         # short text-only edits (default haiku)
+      CLAUDE_MAX_USD_SIMPLE: ${{ vars.CLAUDE_MAX_USD_SIMPLE }}     # cap per simple request (default 1)
+      PREVIEW_URL: ${{ vars.PREVIEW_URL }}                         # Kinsta site deploying branch kinsta-preview
       POLL_SECONDS: ${{ vars.POLL_SECONDS }}
       LIVE_URL: ${{ vars.LIVE_URL }}
       GH_TOKEN: ${{ github.token }}

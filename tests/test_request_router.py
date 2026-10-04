@@ -89,6 +89,11 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(rr.route_once(s, {CH: REPO}, "tok", opener=self.opener()), 0)
         self.assertEqual(self.sent, [])
 
+    def test_preview_states_count_as_handled(self):
+        s = FakeSlack([msg(self.now - 30, reactions=[{"name": "mag", "users": [BOT]}]),
+                       msg(self.now - 20, reactions=[{"name": "wastebasket", "users": [BOT]}])])
+        self.assertEqual(rr.route_once(s, {CH: REPO}, "tok", opener=self.opener()), 0)
+
     def test_failed_dispatch_removes_marker_for_retry(self):
         s = FakeSlack([msg(self.now - 30)])
         self.assertEqual(rr.route_once(s, {CH: REPO}, "tok", opener=self.opener(500)), 0)
