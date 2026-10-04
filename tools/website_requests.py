@@ -73,6 +73,22 @@ APPROVE_RE = re.compile(
     r"^\W*(approved?|approve it|ship it|looks? (good|great)|lgtm|go live|go ahead|publish( it)?|"
     r"(push|put|make|send|take) it live|perfect|love it|yes\b(?![^.!?\n]*\b(but|change|make|move|can)\b))", re.I)
 CANCEL_RE = re.compile(r"^\W*(cancel|discard|scrap( it| that)?|never ?mind|drop it|forget it)\b", re.I)
+# "I don't like this at all, let's keep the site as it is": a cancel unless it also asks for a different change
+CANCEL_ANY_RE = re.compile(
+    r"\b(keep (the )?(site|website|page|it|everything|things) (as it is|as is|the same|how it is|unchanged)|"
+    r"leave (it|the site|the page|everything) (as it is|as is|alone|the same)|"
+    r"don'?t (like|want) (this|it|that|these)( (edit|change|one|version))?( at all)?|"
+    r"(don'?t|do not|no need to) (make|do|publish|ship|push|go live with) (it|this|that|the change)|"
+    r"never ?mind|forget (it|this|that|about it)|no thanks|scrap (it|this|that)|drop (it|this|that)|"
+    r"cancel (it|this|that|the preview))\b", re.I)
+TWEAK_RE = re.compile(r"\b(instead|rather|but (make|change|try|use)|make it|change it|try|could you|can you|"
+                      r"how about|what about|maybe|more|less|bigger|smaller|darker|lighter)\b", re.I)
+
+
+def wants_cancel(text: str) -> bool:
+    """Drop the pending preview? "cancel", or plainly saying to keep the site as it is (and nothing else)."""
+    text = text or ""
+    return bool(CANCEL_RE.match(text) or (CANCEL_ANY_RE.search(text) and not TWEAK_RE.search(text)))
 PREVIEW_PREFIX = "preview/"      # source of a pending preview: branch preview/<thread ts>
 PREVIEW_BRANCH = "kinsta-preview"  # built preview site (Kinsta static site PREVIEW_URL deploys this branch)
 SITE_DIR = "site/"               # the only place the robot may change anything
@@ -525,8 +541,11 @@ def thread_commits(thread_ts: str) -> list[str]:
     return [c for c in out if c not in reverted]
 
 
-def links(pages: list[str], live: str) -> str:
-    return "\n".join(f"• {live}{p}" for p in pages[:8])
+def links(pages: list[str], live: str, version: str = "") -> str:
+    """Page links for a reply. `version` (a short commit id) is added as ?v=..., so each link is a URL no
+    browser or CDN has cached before: the page opens fresh without clearing the cache."""
+    q = lambda p: (("&" if "?" in p else "?") + f"v={version}") if version else ""
+    return "\n".join(f"• {live}{p}{q(p)}" for p in pages[:8])
 
 
 def drop_outside_site() -> list[str]:
@@ -583,6 +602,29 @@ def back_to_main():
     sh("git", "reset", "-q", "--hard", "origin/main", check=False)
 
 
+def no_cache(headers: Path):
+    """Preview site only: every response is `Cache-Control: no-store`, so neither the browser nor the
+    host's CDN keeps an old preview (the live site's 30-day edge caching would otherwise show a stale page)."""
+    text = headers.read_text() if headers.exists() else ""
+    out, block = [], []
+    def flush():
+        if len(block) > 1:                                  # keep a path only if it still has headers
+            out.extend(block)
+    for line in text.splitlines():
+        if re.match(r"\s+Cache-Control:", line, re.I):
+            continue
+        if line and not line[0].isspace() and not line.startswith("#"):
+            flush()
+            block = [line]
+        elif block:
+            block.append(line)
+        else:
+            out.append(line)
+    flush()
+    body = "\n".join(l for l in out if l.strip())
+    headers.write_text("/*\n  Cache-Control: no-store, max-age=0\n" + (body + "\n" if body else ""))
+
+
 def publish_preview(sha: str) -> str | None:
     """Rebuild with the preview commit and push the built site, as a single orphan commit, to the
     PREVIEW_BRANCH branch (the Kinsta preview site deploys it). Returns the preview base URL, or
@@ -593,6 +635,7 @@ def publish_preview(sha: str) -> str | None:
     sh("python3", "tools/build.py", "--env", "staging", "--base-url", url or "https://preview.invalid",
        env=dict(os.environ, GITHUB_SHA=sha))
     dist = ROOT / "dist"
+    no_cache(dist / "_headers")
     index = Path(tempfile.mkdtemp()) / "index"
     env = dict(os.environ, GIT_INDEX_FILE=str(index))
     sh("git", f"--work-tree={dist}", "add", "-A", "-f", ".", env=env)
@@ -635,7 +678,7 @@ def approve_preview(req: dict, live: str) -> tuple[str, str]:
     files = sh("git", "diff", "--name-only", f"{base}..HEAD").stdout.split()
     pages = sorted({u for u in map(url_for, files) if u})
     note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
-    return "white_check_mark", (f"✅ Live: the previewed change is on the site now.\n{links(pages, live)}{note}\n"
+    return "white_check_mark", (f"✅ Live: the previewed change is on the site now.\n{links(pages, live, sha[:7])}{note}\n"
                                 "_Reply *undo* here to roll it back._")
 
 
@@ -656,7 +699,7 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         text = req.get("text") or ""
         if APPROVE_RE.match(text):
             return approve_preview(req, live)
-        if CANCEL_RE.match(text) or (req["kind"] == "undo" and not thread_commits(req["thread_ts"])):
+        if wants_cancel(text) or (req["kind"] == "undo" and not thread_commits(req["thread_ts"])):
             return cancel_preview(req)
     if req["kind"] == "undo":
         commits = thread_commits(req["thread_ts"])
@@ -752,7 +795,7 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
         preview_ok = wait_live(sha, url, timeout=6 * 60) if url else False
         lines = [f"🔍 Preview ready (NOT live yet): {summary}"]
         if url:
-            lines.append(links(pages, url) + ("" if preview_ok else
+            lines.append(links(pages, url, sha[:7]) + ("" if preview_ok else
                          "\n_(The preview site is still publishing; give it a minute if a link shows the old page.)_"))
         else:
             lines.append("_(The preview site isn't set up, so there's no link to share yet.)_")
@@ -764,7 +807,7 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
     sha = commit_and_ship(req, summary)
     live_ok = wait_live(sha, live)
     note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
-    return "white_check_mark", (f"✅ Live: {summary}\n{links(pages, live)}{note}\n"
+    return "white_check_mark", (f"✅ Live: {summary}\n{links(pages, live, sha[:7])}{note}\n"
                                 f"_Reply *undo* here to roll it back, or reply with tweaks._\n_{footer}_")
 
 
@@ -785,7 +828,7 @@ def claim(slack: Slack, channel: str, req: dict):
     if req["kind"] != "blocked":
         model, tier = choose_model(req)
         text = req.get("text") or ""
-        if req["kind"] == "followup" and (APPROVE_RE.match(text) or CANCEL_RE.match(text)):
+        if req["kind"] == "followup" and (APPROVE_RE.match(text) or wants_cancel(text)):
             return                                     # approve / cancel: the outcome reply is enough
         mins = "2 to 4" if tier != "advanced" or req["kind"] == "undo" else "5 to 15"
         later = (f"I'll reply here with a preview link in about {mins} minutes. Nothing goes live "

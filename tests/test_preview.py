@@ -155,6 +155,8 @@ class PreviewFlowTests(unittest.TestCase):
         self.assertEqual(self.origin_file("kinsta-preview", "env.txt"), "staging")              # noindex, no GA
         self.assertIsNone(self.origin_file("kinsta-preview", "_preview/home-desktop.png"))   # no screenshots
         self.assertIn(f"{PREVIEW_URL}/", text)
+        self.assertIn("Cache-Control: no-store", self.origin_file("kinsta-preview", "_headers"))
+        self.assertIn("?v=" + git(self.origin, "rev-parse", "--short=7", f"preview/{TS}"), text)
         self.assertIn("NOT live", text)
         self.assertIn("*approve*", text)
         self.assertEqual(slack.uploads, [])                                                    # link only
@@ -271,6 +273,37 @@ class WordingTests(unittest.TestCase):
         with mock.patch.object(wr, "thread_commits", return_value=[]):
             self.assertFalse(wr.wants_preview(plain))   # the robot's own words don't count
             self.assertFalse(wr.wants_preview(dict(req, kind="new")))
+
+    def test_plain_words_cancel_a_preview(self):
+        for t in ["okay. I dont like this edit at all. Lets keep the site as it is. Thanks for sharing the preview "
+                  "before we went live", "Never mind, leave it as is", "no thanks", "don't make this change",
+                  "keep it the same", "cancel", "Forget it", "I don't like it"]:
+            self.assertTrue(wr.wants_cancel(t), t)
+        for t in ["I don't like this, make it blue instead", "don't like it, try a lighter pink",
+                  "approve", "make the button bigger", "looks good", "keep the logo but change the color"]:
+            self.assertFalse(wr.wants_cancel(t), t)
+
+    def test_links_carry_a_version_so_they_open_fresh(self):
+        self.assertEqual(wr.links(["/", "/legal/"], "https://x.test", "abc1234"),
+                         "• https://x.test/?v=abc1234\n• https://x.test/legal/?v=abc1234")
+        self.assertEqual(wr.links(["/a?b=1"], "https://x.test", "abc1234"), "• https://x.test/a?b=1&v=abc1234")
+        self.assertEqual(wr.links(["/"], "https://x.test"), "• https://x.test/")
+
+    def test_preview_site_headers_say_no_store(self):
+        d = Path(tempfile.mkdtemp())
+        h = d / "_headers"
+        h.write_text("/*\n  X-Frame-Options: SAMEORIGIN\n\n/assets/*\n  Cache-Control: public, max-age=31536000\n"
+                     "/feed/\n  Content-Type: application/rss+xml\n  Cache-Control: public, max-age=0\n")
+        wr.no_cache(h)
+        out = h.read_text()
+        self.assertTrue(out.startswith("/*\n  Cache-Control: no-store"))
+        self.assertEqual(out.count("Cache-Control"), 1)
+        self.assertIn("X-Frame-Options: SAMEORIGIN", out)
+        self.assertIn("/feed/\n  Content-Type: application/rss+xml", out)
+        self.assertNotIn("/assets/*", out)                   # nothing left for that path
+        h.unlink(); wr.no_cache(h)                           # no _headers yet: one is created
+        self.assertEqual(h.read_text(), "/*\n  Cache-Control: no-store, max-age=0\n")
+        shutil.rmtree(d)
 
     def test_approve_and_cancel_phrases(self):
         for t in ["approve", "Approved!", "ship it", "looks good", "Looks great, go live", "lgtm", "go ahead",
