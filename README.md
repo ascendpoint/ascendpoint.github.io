@@ -12,16 +12,15 @@ dashboard, same login). No WordPress, no plugins, nothing to patch.
 | **Repo** | https://github.com/ascendpoint/ascendpoint.github.io (`main` = source, `kinsta` = built site) |
 | **Deploy** | push to `main` → GitHub Actions builds + checks → `kinsta` branch → Sevalla API deploy → live check (~2 min) |
 
-## Website requests: Slack or email, no logins (AscendPoint AI robot)
+## Website requests: Slack, no logins (AscendPoint AI robot)
 
 Anyone at AscendPoint can change the site without GitHub, Kinsta or Claude accounts:
 
 - **Slack:** post in **#ascendpoint-website-requests** (renamed from #website-requests on Oct 4) what you want, in plain English (screenshots and photos
   welcome). One request per message.
-- **Email:** send it to **website@ascendpoint.agency** from your team address. The answer comes back
-  in #ascendpoint-website-requests (emails from outside the team domains are refused with 🚫).
-- **SERP Dental site (serpdental.com)?** Different channel: **#serpdental-website-requests**, or email
-  **website@serp.agency**. Each channel's topic says which site it edits; this robot never touches serpdental.com.
+- **No email.** Email requests were switched off on Oct 4 (anyone can type a From address, so email
+  can't be trusted to change the site). Anything that still arrives by email is refused with 🚫.
+- **SERP Dental site (serpdental.com)?** Different channel: **#serpdental-website-requests**. Each channel's topic says which site it edits; this robot never touches serpdental.com.
 
 What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 1. AscendPoint AI reacts 👀 and replies "On it" in the thread.
@@ -60,12 +59,12 @@ must look at the result before it publishes. The ✅ reply names the model used 
 
 How it works: `.github/workflows/website-requests.yml` keeps one listener running in GitHub Actions
 (polls Slack every 10 s for ~5.7 h, then starts its successor; the 15-minute cron is a backup; free on a public repo; no one's
-computer needs to be on). Email lands in the channel instantly, so it is picked up the same way and `tools/website_requests.py` does the work: Claude Code in
+computer needs to be on). `tools/website_requests.py` does the work: Claude Code in
 headless mode with a tight tool allowlist (edit `site/` only, run the build; no git, no web, no shell),
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
 `/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 🔍 preview waiting for approval, 🗑️ preview
-dropped, 💬 question, ⚠️ failed, ↩️ undone, 🚫 refused email). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
+dropped, 💬 question, ⚠️ failed, ↩️ undone, 🚫 email refused). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
 
 Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
 key from the Claude Console, ideally in its own workspace "AscendPoint website robot" so Usage/Cost shows
@@ -79,17 +78,13 @@ to @mention on failures), `CLAUDE_MODEL` (default `sonnet`), `CLAUDE_MAX_USD` (d
 `PREVIEW_URL` (the Kinsta preview site serving branch `kinsta-preview`),
 `ANTHROPIC_WORKSPACE_ID` (Claude Console workspace to bill; required when the API key is organization-level,
 not created inside a workspace: Oct 2 2026 = Default workspace wrkspc_01AphpFe2Yxf9FqUWDUssPN6 of the
-Claude Console org Kyle created for the robot), `WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,
-serp.agency, serp.co, smilerevenue.com, medicalmarketingwhiz.com).
+Claude Console org Kyle created for the robot).
 
 Current setup (Oct 4 2026): Slack workspace AscendPoint Agency, channel **#ascendpoint-website-requests**
 (`C0C67AHG5T8`, public); bot = Slack app A0BB2TCVB9P "AscendPoint AI" (bot user U0BAXPR7CH3, shown as
 "AscendPoint MCP" until the app is reinstalled; it also powers Kyle's local slack-ascendpoint MCP);
-`WEBSITE_REQUESTS_OWNER` = Kyle (U04Q3M29UKE). Email path: Google Group **website@ascendpoint.agency**
-(owner kyle@ascendpoint.agency, posting limited to the organization) whose member is the channel's
-Slack email address (channel → "Send emails to channel"); Slack posts each email into the channel as
-an email file and the robot reads sender/subject/body from it. Adding that external address needs
-"Allow external members" permitted for groups in the Google Admin console.
+`WEBSITE_REQUESTS_OWNER` = Kyle (U04Q3M29UKE). Email path: retired Oct 4 (Slack only). The channel's Slack email address was deleted and the Google Group
+website@ascendpoint.agency no longer forwards to Slack; the robot refuses any email that still lands (🚫).
 To pause the robot: Actions → "Website requests" → ⋯ → Disable workflow.
 If the repo is ever made private, the always-on listener would use ~43,000 Actions minutes/month
 (over the free tier): switch the cron to `*/5` with `LISTEN_MINUTES: "4"` or move to Slack Events first.

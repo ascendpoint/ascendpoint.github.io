@@ -81,6 +81,7 @@ class SelectionTests(unittest.TestCase):
                  text="📧 Email request from Sonia Hounsell <sonia@ascendpoint.agency>: Fix the typo on About")]
         req = wr.find_next(FakeSlack(h), "C1", now=NOW)
         self.assertEqual(req["requester"], "Sonia Hounsell <sonia@ascendpoint.agency> (email)")
+        self.assertEqual(req["kind"], "blocked")                 # email requests are switched off
 
     def email_msg(self, ts, address, name="Sonia Hounsell", subject="Fix the typo on About",
                   body="Change 'teh' to 'the' in the first paragraph.", **kw):
@@ -91,8 +92,8 @@ class SelectionTests(unittest.TestCase):
 
     def test_slack_channel_email_is_a_request(self):
         h = [self.email_msg(NOW - 10, "sonia@ascendpoint.agency", subtype="file_share", user="UKYLE")]
-        req = wr.find_next(FakeSlack(h), "C1", now=NOW, allowed={"UPAT"})   # email bypasses user allowlist
-        self.assertEqual(req["kind"], "new")
+        req = wr.find_next(FakeSlack(h), "C1", now=NOW, allowed={"UPAT"})
+        self.assertEqual(req["kind"], "blocked")                 # even from a team address: Slack only now
         self.assertEqual(req["requester"], "Sonia Hounsell <sonia@ascendpoint.agency> (email)")
         self.assertTrue(req["text"].startswith("Subject: Fix the typo on About"))
         self.assertIn("'teh' to 'the'", req["text"])
@@ -102,7 +103,7 @@ class SelectionTests(unittest.TestCase):
         h = [self.email_msg(NOW - 10, "website@ascendpoint.agency", name="Patrick via Website Requests",
                             user=None, bot_id="BEMAIL", subtype="bot_message")]
         req = wr.find_next(FakeSlack(h), "C1", now=NOW)
-        self.assertEqual(req["kind"], "new")
+        self.assertEqual(req["kind"], "blocked")
 
     def test_email_from_outside_domain_is_blocked(self):
         h = [self.email_msg(NOW - 10, "someone@gmail.com", name="Spammer")]
@@ -110,12 +111,16 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(req["kind"], "blocked")
         reaction, text = wr.handle(req, FakeSlack([]), "https://x")
         self.assertEqual(reaction, "no_entry_sign")
-        self.assertIn("Nothing was changed", text)
+        self.assertIn("nothing was changed", text)
+        self.assertIn("Post the request here in the channel", text)
 
-    def test_email_domains_env(self):
-        h = [self.email_msg(NOW - 10, "x@partner.com")]
-        with mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_EMAIL_DOMAINS": "partner.com"}):
-            self.assertEqual(wr.find_next(FakeSlack(h), "C1", now=NOW)["kind"], "new")
+    def test_email_requests_are_never_run(self):
+        for addr in ("kyle@ascendpoint.agency", "x@serp.agency", "someone@gmail.com"):
+            req = wr.find_next(FakeSlack([self.email_msg(NOW - 10, addr)]), "C1", now=NOW)
+            self.assertEqual(req["kind"], "blocked", addr)
+            with mock.patch.object(wr, "run_claude", side_effect=AssertionError("must not run")), \
+                    mock.patch.object(wr, "sync_main", side_effect=AssertionError("must not touch git")):
+                self.assertEqual(wr.handle(req, FakeSlack([]), "https://x")[0], "no_entry_sign")
 
     def test_blocked_request_gets_no_on_it_reply(self):
         h = [self.email_msg(NOW - 10, "someone@gmail.com")]

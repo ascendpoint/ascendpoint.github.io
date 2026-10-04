@@ -13,7 +13,7 @@ name: Website requests (Slack -> live site)
 # Needs: secrets SLACK_BOT_TOKEN + ANTHROPIC_API_KEY, variable SLACK_CHANNEL_ID.
 # Optional variables: WEBSITE_REQUESTS_START (unix time; ignore older messages),
 # WEBSITE_REQUESTS_ALLOWED (comma-separated Slack user IDs), WEBSITE_REQUESTS_OWNER (Slack user ID
-# to @mention when something fails), WEBSITE_REQUESTS_EMAIL_DOMAINS, CLAUDE_MODEL (default
+# to @mention when something fails), CLAUDE_MODEL (default
 # "sonnet"), CLAUDE_MAX_USD (default 3), POLL_SECONDS (default 10).
 
 on:
@@ -41,7 +41,6 @@ jobs:
       WEBSITE_REQUESTS_START: ${{ vars.WEBSITE_REQUESTS_START }}
       WEBSITE_REQUESTS_ALLOWED: ${{ vars.WEBSITE_REQUESTS_ALLOWED }}
       WEBSITE_REQUESTS_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
-      WEBSITE_REQUESTS_EMAIL_DOMAINS: ${{ vars.WEBSITE_REQUESTS_EMAIL_DOMAINS }}
       ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}   # needed when the key is org-level
       CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
       CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}

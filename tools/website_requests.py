@@ -8,12 +8,9 @@ Runs in GitHub Actions (.github/workflows/website-requests.yml). A listener job 
     python3 tools/website_requests.py next     # one-shot: find the oldest unhandled request -> request.json
     python3 tools/website_requests.py run request.json
 
-Front doors (both land in the Slack channel, which is the single queue):
-  * a message in #ascendpoint-website-requests (top-level = new request; reply in the thread = follow-up)
-  * an email to website@ascendpoint.agency: a Google Group whose member is the channel's own
-    Slack email address, so Slack posts the email into the channel (an "email" file with
-    from/subject/body). Only senders at WEBSITE_REQUESTS_EMAIL_DOMAINS are acted on.
-    (A Zapier-style text post "📧 Email request from <name> <email>: ..." also works.)
+Front door: a message in #ascendpoint-website-requests (top-level = new request; reply in the thread =
+follow-up). Email requests were switched off on Oct 4: an email that still lands in the channel (Slack
+email file, or a "📧 Email request from ..." post) is never acted on; it gets a 🚫 "post it here" reply.
 
 For each request the robot:
   1. reacts 👀 and replies "On it" in the thread,
@@ -37,7 +34,7 @@ State lives in Slack reactions: a message the bot has reacted to is never picked
 
 Environment: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ANTHROPIC_API_KEY, GITHUB_TOKEN (Actions),
 optional WEBSITE_REQUESTS_START (unix ts; ignore older messages), WEBSITE_REQUESTS_ALLOWED
-(comma-separated Slack user IDs; empty = anyone in the channel), WEBSITE_REQUESTS_EMAIL_DOMAINS
+(comma-separated Slack user IDs; empty = anyone in the channel)
 (comma-separated sender domains for email requests; default below), LIVE_URL, CLAUDE_MODEL(_SIMPLE/_ADVANCED),
 CLAUDE_MAX_USD(_SIMPLE/_ADVANCED), PREVIEW_URL (the preview site; without it the reply says there's no link yet).
 Standard library only.
@@ -157,14 +154,6 @@ def budget(tier: str) -> str:
     if tier == "simple":
         return os.environ.get("CLAUDE_MAX_USD_SIMPLE") or "1"
     return os.environ.get("CLAUDE_MAX_USD") or "3"
-
-
-DEFAULT_EMAIL_DOMAINS = "ascendpoint.agency,serp.agency,serp.co,smilerevenue.com,medicalmarketingwhiz.com"
-
-
-def email_domains() -> set[str]:
-    raw = os.environ.get("WEBSITE_REQUESTS_EMAIL_DOMAINS") or DEFAULT_EMAIL_DOMAINS
-    return {d.strip().lower().lstrip("@") for d in raw.split(",") if d.strip()}
 
 
 def email_file(msg: dict) -> dict | None:
@@ -321,9 +310,7 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
     kind = ("undo" if UNDO_RE.match(text or "") and thread_ts != msg["ts"] else
             ("followup" if thread_ts != msg["ts"] else "new"))
     if requester.endswith("(email)"):
-        domain = (sender or "").rsplit("@", 1)[-1] if sender and "@" in sender else ""
-        if domain not in email_domains():
-            kind = "blocked"
+        kind = "blocked"      # email requests are switched off (Oct 4): changes only come from the Slack channel
     return {
         "channel": channel, "ts": msg["ts"], "thread_ts": thread_ts,
         "user": msg.get("user"), "requester": requester, "sender": sender, "text": text,
@@ -690,9 +677,8 @@ def cancel_preview(req: dict) -> tuple[str, str]:
 def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
     """Returns (reaction, reply text)."""
     if req["kind"] == "blocked":
-        return "no_entry_sign", ("🚫 I only act on emailed website requests from team addresses "
-                                 f"({', '.join(sorted(email_domains()))}). Nothing was changed. "
-                                 "Anyone on the team can post the request here instead.")
+        return "no_entry_sign", ("🚫 Website changes by email are switched off, so nothing was changed. "
+                                 "Post the request here in the channel instead.")
     sync_main()
     pending = req["kind"] in ("followup", "undo") and preview_pending(req["thread_ts"])
     if pending:
