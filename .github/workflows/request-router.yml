@@ -16,10 +16,15 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      handoff:
+        description: "Set by the previous listener when it hands over (waits for it to finish)"
+        required: false
+        default: "false"
 
 permissions:
   contents: read
-  actions: read
+  actions: write    # the hand-off step starts the next router run
 
 jobs:
   route:
@@ -39,8 +44,16 @@ jobs:
             echo "Not configured yet (SLACK_BOT_TOKEN / SERPDENTAL_DISPATCH_TOKEN / ROUTES); nothing to do."
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          older=$(gh api "repos/${{ github.repository }}/actions/workflows/request-router.yml/runs?status=in_progress&per_page=20" \
+          # A hand-off run (started by the previous router as it finishes) waits up to 3 minutes for that
+          # run to wrap up; a cron run just exits if a router is already going.
+          for i in $(seq 1 18); do
+            older=$(gh api "repos/${{ github.repository }}/actions/workflows/request-router.yml/runs?status=in_progress&per_page=20" \
             --jq "[.workflow_runs[] | select(.id < ${{ github.run_id }})] | length")
+            [ "${older:-0}" -eq 0 ] && break
+            [ "${{ inputs.handoff }}" = "true" ] || break
+            sleep 10
+          done
+          echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
           if [ "${older:-0}" -gt 0 ]; then
             echo "A router is already running; exiting."
             echo "go=false" >> "$GITHUB_OUTPUT"
@@ -61,3 +74,18 @@ jobs:
         env:
           LISTEN_MINUTES: "340"
         run: python3 tools/request_router.py listen
+
+      # GitHub runs the 15-minute cron only every few hours on this repo, which left multi-hour gaps
+      # with no router. So each router starts its successor when it finishes (workflow_dispatch is
+      # one of the events a GITHUB_TOKEN may trigger). Not after a manual cancel (that's how you stop
+      # it), and not if this run lasted under 5 minutes (a crash loop falls back to the cron instead).
+      - name: Hand off to the next router
+        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
+        run: |
+          ran=$(( $(date +%s) - ${{ steps.gate.outputs.started }} ))
+          if [ "$ran" -lt 300 ]; then
+            echo "Ran only ${ran}s; not handing off (the cron will start the next router)."
+          else
+            gh workflow run request-router.yml --ref "${{ github.ref_name }}" -f handoff=true
+            echo "Next router started."
+          fi

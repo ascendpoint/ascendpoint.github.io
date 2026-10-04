@@ -6,8 +6,8 @@ name: Website requests (Slack -> live site)
 # One "listener" run is always going: it polls the channel every 10 seconds for ~5.7 hours, and
 # for each request lets Claude make the change, runs every site check, commits to main, publishes,
 # and replies in the Slack thread. The cron below starts a fresh listener every 15 minutes; a new
-# run exits straight away if an older listener is still running, so there is never more than one
-# and a gap is at most ~15 minutes (GitHub cron permitting). Free for public repositories.
+# run exits straight away if an older listener is still running, so there is never more than one.
+# Each listener also starts the next one when it finishes (see the last step), so there are no gaps. Free for public repositories.
 # See tools/website_requests.py and README "Website requests".
 #
 # Needs: secrets SLACK_BOT_TOKEN + ANTHROPIC_API_KEY, variable SLACK_CHANNEL_ID.
@@ -20,6 +20,11 @@ on:
   schedule:
     - cron: "*/15 * * * *"
   workflow_dispatch:
+    inputs:
+      handoff:
+        description: "Set by the previous listener when it hands over (waits for it to finish)"
+        required: false
+        default: "false"
 
 permissions:
   contents: write   # commit the change to main
@@ -53,8 +58,16 @@ jobs:
             echo "Not configured yet (SLACK_BOT_TOKEN / ANTHROPIC_API_KEY / SLACK_CHANNEL_ID); nothing to do."
             echo "go=false" >> "$GITHUB_OUTPUT"; exit 0
           fi
-          older=$(gh api "repos/${{ github.repository }}/actions/workflows/website-requests.yml/runs?status=in_progress&per_page=20" \
+          # A hand-off run (started by the previous listener as it finishes) waits up to 3 minutes for that
+          # run to wrap up; a cron run just exits if a listener is already going.
+          for i in $(seq 1 18); do
+            older=$(gh api "repos/${{ github.repository }}/actions/workflows/website-requests.yml/runs?status=in_progress&per_page=20" \
             --jq "[.workflow_runs[] | select(.id < ${{ github.run_id }})] | length")
+            [ "${older:-0}" -eq 0 ] && break
+            [ "${{ inputs.handoff }}" = "true" ] || break
+            sleep 10
+          done
+          echo "started=$(date +%s)" >> "$GITHUB_OUTPUT"
           if [ "${older:-0}" -gt 0 ]; then
             echo "A listener is already running; exiting."
             echo "go=false" >> "$GITHUB_OUTPUT"
@@ -89,3 +102,18 @@ jobs:
         env:
           LISTEN_MINUTES: "340"
         run: python3 tools/website_requests.py listen
+
+      # GitHub runs the 15-minute cron only every few hours on this repo, which left multi-hour gaps
+      # with no listener. So each listener starts its successor when it finishes (workflow_dispatch is
+      # one of the events a GITHUB_TOKEN may trigger). Not after a manual cancel (that's how you stop
+      # it), and not if this run lasted under 5 minutes (a crash loop falls back to the cron instead).
+      - name: Hand off to the next listener
+        if: ${{ !cancelled() && steps.gate.outputs.go == 'true' }}
+        run: |
+          ran=$(( $(date +%s) - ${{ steps.gate.outputs.started }} ))
+          if [ "$ran" -lt 300 ]; then
+            echo "Ran only ${ran}s; not handing off (the cron will start the next listener)."
+          else
+            gh workflow run website-requests.yml --ref "${{ github.ref_name }}" -f handoff=true
+            echo "Next listener started."
+          fi
