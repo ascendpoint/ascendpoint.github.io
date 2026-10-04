@@ -608,7 +608,7 @@ def no_cache(headers: Path):
     text = headers.read_text() if headers.exists() else ""
     out, block = [], []
     def flush():
-        if len(block) > 1:                                  # keep a path only if it still has headers
+        if any(l.strip() and l[0].isspace() for l in block[1:]):   # keep a path only if it still has headers
             out.extend(block)
     for line in text.splitlines():
         if re.match(r"\s+Cache-Control:", line, re.I):

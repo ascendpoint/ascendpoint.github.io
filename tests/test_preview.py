@@ -301,6 +301,11 @@ class WordingTests(unittest.TestCase):
         self.assertIn("X-Frame-Options: SAMEORIGIN", out)
         self.assertIn("/feed/\n  Content-Type: application/rss+xml", out)
         self.assertNotIn("/assets/*", out)                   # nothing left for that path
+        h.write_text("# comment\n/*\n  X-A: 1\n\n/assets/*\n  Cache-Control: immutable\n\n/img/*\n  Cache-Control: x\n")
+        wr.no_cache(h)                                       # blank-line separated blocks (AscendPoint's format)
+        self.assertNotIn("/assets/*", h.read_text())
+        self.assertNotIn("/img/*", h.read_text())
+        self.assertIn("X-A: 1", h.read_text())
         h.unlink(); wr.no_cache(h)                           # no _headers yet: one is created
         self.assertEqual(h.read_text(), "/*\n  Cache-Control: no-store, max-age=0\n")
         shutil.rmtree(d)
