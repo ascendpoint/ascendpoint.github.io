@@ -30,7 +30,9 @@ shutil.rmtree(dst, ignore_errors=True)
 shutil.copytree(root / "site" / "pages", dst)
 env = sys.argv[sys.argv.index("--env") + 1] if "--env" in sys.argv else "production"
 (dst / "env.txt").write_text(env)
-(dst / "version.txt").write_text(subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True))
+import os
+(dst / "version.txt").write_text(os.environ.get("GITHUB_SHA") or  # like the real build.py
+                                 subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=root, text=True))
 '''
 FAKE_SHOTS = '''import sys
 from pathlib import Path
@@ -98,7 +100,8 @@ class PreviewFlowTests(unittest.TestCase):
             mock.patch.object(wr, "wait_live", return_value=True),
             mock.patch.object(wr, "GIT_USER", ("-c", "user.name=t", "-c", "user.email=t@t")),
             mock.patch.object(wr, "checks", side_effect=self.fake_checks),
-            mock.patch.dict(os.environ, {"PREVIEW_URL": PREVIEW_URL, "WEBSITE_REQUESTS_OWNER": "UOWN"}),
+            mock.patch.dict(os.environ, {"PREVIEW_URL": PREVIEW_URL, "WEBSITE_REQUESTS_OWNER": "UOWN",
+                                         "GITHUB_SHA": self.base}),   # as in Actions: the listener's start commit
         ]
         for p in self.patches:
             p.start()
@@ -260,6 +263,21 @@ class WordingTests(unittest.TestCase):
             self.assertTrue(wr.wants_preview({"text": t}), t)
         for t in no:
             self.assertFalse(wr.wants_preview({"text": t}), t)
+
+    def test_followup_in_preview_thread_stays_preview(self):
+        opener = "Kyle Robins: Can we remove X? Before you do it live, send me a mockup I can approve first"
+        req = {"text": "Can you remove this here? I don't like this at the top", "kind": "followup",
+               "thread_ts": TS, "context": [opener, "AscendPoint AI: On it."]}
+        with mock.patch.object(wr, "thread_commits", return_value=[]):
+            self.assertTrue(wr.wants_preview(req))
+        with mock.patch.object(wr, "thread_commits", return_value=["abc123"]):   # already live: normal edit
+            self.assertFalse(wr.wants_preview(req))
+        with mock.patch.object(wr, "thread_commits", side_effect=RuntimeError("no git")):
+            self.assertTrue(wr.wants_preview(req))
+        plain = dict(req, context=["Kyle Robins: remove X", "AscendPoint AI: I can't set up a private preview"])
+        with mock.patch.object(wr, "thread_commits", return_value=[]):
+            self.assertFalse(wr.wants_preview(plain))   # the robot's own words don't count
+            self.assertFalse(wr.wants_preview(dict(req, kind="new")))
 
     def test_approve_and_cancel_phrases(self):
         for t in ["approve", "Approved!", "ship it", "looks good", "Looks great, go live", "lgtm", "go ahead",

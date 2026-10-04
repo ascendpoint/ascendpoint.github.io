@@ -1,6 +1,6 @@
 name: Website requests (Slack -> live site)
 
-# Near-instant website changes from the #website-requests Slack channel (and emails to
+# Near-instant website changes from the #ascendpoint-website-requests Slack channel (and emails to
 # website@ascendpoint.agency, which Slack posts into that channel).
 #
 # One "listener" run is always going: it polls the channel every 10 seconds for ~5.7 hours, and

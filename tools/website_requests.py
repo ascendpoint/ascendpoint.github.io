@@ -9,7 +9,7 @@ Runs in GitHub Actions (.github/workflows/website-requests.yml). A listener job 
     python3 tools/website_requests.py run request.json
 
 Front doors (both land in the Slack channel, which is the single queue):
-  * a message in #website-requests (top-level = new request; reply in the thread = follow-up)
+  * a message in #ascendpoint-website-requests (top-level = new request; reply in the thread = follow-up)
   * an email to website@ascendpoint.agency: a Google Group whose member is the channel's own
     Slack email address, so Slack posts the email into the channel (an "email" file with
     from/subject/body). Only senders at WEBSITE_REQUESTS_EMAIL_DOMAINS are acted on.
@@ -547,8 +547,21 @@ def drop_outside_site() -> list[str]:
 
 
 def wants_preview(req: dict) -> bool:
-    """The requester asked to see it before it goes live ("preview first", "send me a mockup", ...)."""
-    return bool(PREVIEW_RE.search(req.get("text") or ""))
+    """The requester asked to see it before it goes live ("preview first", "send me a mockup", ...).
+
+    A follow-up counts too when the thread's opening request asked for a preview and nothing from the
+    thread is live yet ("Can we remove X? Send me a mockup first" ... "remove this bit here")."""
+    if PREVIEW_RE.search(req.get("text") or ""):
+        return True
+    ctx = req.get("context") or []
+    if req.get("kind") == "followup" and ctx:
+        opener = ctx[0].split(": ", 1)[-1]            # context lines are "Name: text"; [0] is the thread's opener
+        if PREVIEW_RE.search(opener):
+            try:
+                return not thread_commits(req["thread_ts"])
+            except Exception:
+                return True                              # can't tell: the safe choice is not to go live
+    return False
 
 
 def preview_branch(thread_ts: str) -> str:
@@ -582,7 +595,10 @@ def publish_preview(sha: str) -> str | None:
     PREVIEW_BRANCH branch (the Kinsta preview site deploys it). Returns the preview base URL, or
     None when PREVIEW_URL isn't configured (the reply then relies on the screenshots)."""
     url = (os.environ.get("PREVIEW_URL") or "").rstrip("/")
-    sh("python3", "tools/build.py", "--env", "staging", "--base-url", url or "https://preview.invalid")
+    # build.py stamps version.txt with $GITHUB_SHA when set, which inside the listener is the commit the
+    # listener started from, not this preview: override it so the wait below can see the preview land.
+    sh("python3", "tools/build.py", "--env", "staging", "--base-url", url or "https://preview.invalid",
+       env=dict(os.environ, GITHUB_SHA=sha))
     dist = ROOT / "dist"
     shots = Path("/tmp/website_request_preview_shots")
     if shots.exists():                       # screenshots ride along, so links work without Slack uploads

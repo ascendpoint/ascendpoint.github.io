@@ -2,7 +2,7 @@
 """Wake other sites' website robots from Slack (runs free, here, because this repo is public).
 
 The AscendPoint robot (tools/website_requests.py) is untouched by this file: it keeps handling
-#website-requests for ascendpoint.agency. This router only watches OTHER channels and never edits
+#ascendpoint-website-requests for ascendpoint.agency. This router only watches OTHER channels and never edits
 anything. For each new request in a routed channel it:
 
   1. reacts 📥 ("queued") so it isn't sent twice, and

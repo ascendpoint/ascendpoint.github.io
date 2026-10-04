@@ -16,10 +16,12 @@ dashboard, same login). No WordPress, no plugins, nothing to patch.
 
 Anyone at AscendPoint can change the site without GitHub, Kinsta or Claude accounts:
 
-- **Slack:** post in **#website-requests** what you want, in plain English (screenshots and photos
+- **Slack:** post in **#ascendpoint-website-requests** (renamed from #website-requests on Oct 4) what you want, in plain English (screenshots and photos
   welcome). One request per message.
 - **Email:** send it to **website@ascendpoint.agency** from your team address. The answer comes back
-  in #website-requests (emails from outside the team domains are refused with 🚫).
+  in #ascendpoint-website-requests (emails from outside the team domains are refused with 🚫).
+- **SERP Dental site (serpdental.com)?** Different channel: **#serpdental-website-requests**, or email
+  **website@serp.agency**. Each channel's topic says which site it edits; this robot never touches serpdental.com.
 
 What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 1. AscendPoint AI reacts 👀 and replies "On it" in the thread.
@@ -47,8 +49,10 @@ it goes live", "staging"). The robot makes the change on branch `preview/<thread
 staging build (noindex, no analytics) to branch `kinsta-preview`, which the Kinsta preview site (`PREVIEW_URL`)
 serves, and replies 🔍 with preview links plus desktop + mobile screenshots. In that thread: **approve** (or
 "ship it", "looks good", "go live", "yes") puts exactly that change live; any other reply updates the preview;
-**cancel** drops it 🗑️. The preview site always shows the most recent preview. Screenshots are attached in
-Slack when the Slack app has the `files:write` scope, otherwise linked from the preview site.
+**cancel** drops it 🗑️. The preview site (https://ascendpoint-preview-nwyxk.kinsta.page, Sevalla static site
+`ascendpoint-preview`) always shows the most recent preview. Screenshots are attached in Slack (the app has
+`files:write` since Oct 4; without it they're linked from the preview site). If a thread's first message asked
+for a preview, later replies in it stay previews until something from the thread is approved.
 
 For anything visual the robot builds the site and screenshots it on desktop and mobile
 (`tools/screenshot.py`, headless Chromium; frames over time for animation, hover and on-scroll states) and
@@ -78,7 +82,7 @@ not created inside a workspace: Oct 2 2026 = Default workspace wrkspc_01AphpFe2Y
 Claude Console org Kyle created for the robot), `WEBSITE_REQUESTS_EMAIL_DOMAINS` (sender domains accepted by email; default ascendpoint.agency,
 serp.agency, serp.co, smilerevenue.com, medicalmarketingwhiz.com).
 
-Current setup (Oct 2 2026): Slack workspace AscendPoint Agency, channel **#website-requests**
+Current setup (Oct 4 2026): Slack workspace AscendPoint Agency, channel **#ascendpoint-website-requests**
 (`C0C67AHG5T8`, public); bot = Slack app A0BB2TCVB9P "AscendPoint AI" (bot user U0BAXPR7CH3, shown as
 "AscendPoint MCP" until the app is reinstalled; it also powers Kyle's local slack-ascendpoint MCP);
 `WEBSITE_REQUESTS_OWNER` = Kyle (U04Q3M29UKE). Email path: Google Group **website@ascendpoint.agency**
