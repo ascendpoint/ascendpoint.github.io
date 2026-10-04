@@ -115,6 +115,20 @@ class RouterTests(unittest.TestCase):
         channels = {p.get("channel") for m, p in s.calls if m.startswith("conversations.")}
         self.assertEqual(channels, {CH})   # never the AscendPoint #website-requests channel
 
+    def test_listen_restarts_into_new_code(self):
+        from unittest import mock
+        t = {"now": 0.0}
+        s = FakeSlack([])
+        with mock.patch.object(rr, "code_changed", return_value=True), \
+                mock.patch.object(rr.os, "execv", side_effect=SystemExit("restarted")) as ex, \
+                mock.patch.dict(rr.os.environ, {}, clear=False):
+            with self.assertRaises(SystemExit):
+                rr.listen(s, {CH: REPO}, "tok", minutes=60, poll=400, sleep=lambda x: t.update(now=t["now"] + x),
+                          clock=lambda: t["now"], watch_code=True)
+            self.assertEqual(ex.call_args.args[1][-1], "listen")
+            self.assertEqual(float(rr.os.environ["LISTEN_UNTIL"]), 3600.0)   # keeps the original end time
+            rr.os.environ.pop("LISTEN_UNTIL", None)
+
     def test_not_configured_is_a_no_op(self):
         import os
         from unittest import mock

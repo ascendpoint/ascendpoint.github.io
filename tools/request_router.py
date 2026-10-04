@@ -120,9 +120,22 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
     return sent
 
 
+CODE = [Path(__file__).resolve(), Path(__file__).resolve().parent / "website_requests.py"]
+
+
+def code_changed(snapshot: list[bytes]) -> bool:
+    """Pull main; True when this router (or the robot rules it imports) changed since it started."""
+    import subprocess
+    subprocess.run(["git", "pull", "-q", "--ff-only", "origin", "main"], cwd=Path(__file__).resolve().parent.parent,
+                   check=False, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    return [p.read_bytes() if p.exists() else b"" for p in CODE] != snapshot
+
+
 def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0,
-           sleep=time.sleep, clock=time.time) -> int:
-    end = clock() + minutes * 60
+           sleep=time.sleep, clock=time.time, watch_code: bool = False) -> int:
+    end = float(os.environ.get("LISTEN_UNTIL") or 0) or clock() + minutes * 60
+    snapshot = [p.read_bytes() if p.exists() else b"" for p in CODE]
+    last_pull = clock()
     cache: dict = {}
     total = 0
     while clock() < end:
@@ -130,6 +143,12 @@ def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0
             total += route_once(slack, routes, token, start=start, cache=cache)
         except Exception as e:
             print(f"router error: {type(e).__name__}", file=sys.stderr, flush=True)
+        if watch_code and clock() - last_pull > 300:
+            last_pull = clock()
+            if code_changed(snapshot):             # e.g. new "handled" reactions: restart into the new code
+                print("router code updated on main; restarting", flush=True)
+                os.environ["LISTEN_UNTIL"] = str(end)
+                os.execv(sys.executable, [sys.executable, str(CODE[0]), "listen"])
         sleep(poll)
     print(f"router done: {total} request(s) queued", flush=True)
     return 0
@@ -149,7 +168,7 @@ def main(argv: list[str]) -> int:
         return 0
     if argv[:1] == ["listen"]:
         return listen(slack, routes, dtoken, minutes=float(os.environ.get("LISTEN_MINUTES") or 340),
-                      poll=float(os.environ.get("POLL_SECONDS") or 10), start=start)
+                      poll=float(os.environ.get("POLL_SECONDS") or 10), start=start, watch_code=True)
     print(__doc__)
     return 2
 

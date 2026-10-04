@@ -820,11 +820,13 @@ def claim(slack: Slack, channel: str, req: dict):
         text = req.get("text") or ""
         if req["kind"] == "followup" and (APPROVE_RE.match(text) or CANCEL_RE.match(text)):
             return                                     # approve / cancel: the outcome reply is enough
-        later = ("I'll reply here with a preview link and screenshots (nothing goes live until you approve)"
-                 if wants_preview(req) else "I'll reply here when it's live")
-        text = (f"👀 On it. {later} (usually 2 to 4 minutes)." if tier != "advanced" or req["kind"] == "undo" else
+        mins = "2 to 4" if tier != "advanced" or req["kind"] == "undo" else "5 to 15"
+        later = (f"I'll reply here with a preview (screenshots + link) in about {mins} minutes. Nothing goes live "
+                 "until you approve it." if wants_preview(req) else
+                 f"I'll reply here when it's live (usually {mins} minutes).")
+        text = (f"👀 On it. {later}" if tier != "advanced" or req["kind"] == "undo" else
                 f"👀 On it. This is a design/advanced change, so I'm using {model_name(model)} and checking it "
-                f"visually on desktop and mobile. {later} (usually 5 to 15 minutes).")
+                f"visually on desktop and mobile. {later}")
         slack.call("chat.postMessage", channel=channel, thread_ts=req["thread_ts"], text=text)
 
 
