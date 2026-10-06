@@ -109,6 +109,28 @@ class RouterTests(unittest.TestCase):
         self.assertEqual([b["client_payload"] for _, b, _ in self.sent],
                          [{"channel": CH, "ts": undo["ts"], "thread_ts": top["ts"]}])
 
+    def test_any_thread_channel_counts_replies_under_other_bots(self):
+        import os
+        from unittest import mock
+        top = msg(self.now - 100, user=None, bot_id="BZAPIER", text="Daily Funnel Report", reply_count=1,
+                  latest_reply=f"{self.now - 10:.6f}")
+        q = msg(self.now - 10, text="why is CPL up?", thread_ts=top["ts"])
+        chat = msg(self.now - 80, reply_count=1, latest_reply=f"{self.now - 5:.6f}",
+                   reactions=[{"name": "white_check_mark", "users": [BOT]}])
+        chat_reply = msg(self.now - 5, text="lunch?", thread_ts=chat["ts"])
+        s = FakeSlack([top, chat], replies={top["ts"]: [top, q], chat["ts"]: [chat, chat_reply]})
+        with mock.patch.dict(os.environ, {"ROUTER_ANY_THREAD": "CADS"}):
+            rr.route_once(s, {"CADS": "ascendpoint/ads-assistant"}, "tok", opener=self.opener())
+        payloads = [b["client_payload"] for _, b, _ in self.sent]
+        self.assertIn({"channel": "CADS", "ts": q["ts"], "thread_ts": top["ts"]}, payloads)
+        self.assertNotIn(chat_reply["ts"], [p["ts"] for p in payloads])     # people chatting among themselves
+        # without the setting, only threads this bot is in count
+        self.sent.clear()
+        s2 = FakeSlack([top], replies={top["ts"]: [top, q]})
+        with mock.patch.dict(os.environ, {"ROUTER_ANY_THREAD": ""}):
+            rr.route_once(s2, {"CADS": "ascendpoint/ads-assistant"}, "tok", opener=self.opener())
+        self.assertEqual([b["client_payload"]["ts"] for _, b, _ in self.sent], [])
+
     def test_only_routed_channels_are_read(self):
         s = FakeSlack([msg(self.now - 30)])
         rr.route_once(s, {CH: REPO}, "tok", opener=self.opener())

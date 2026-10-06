@@ -16,7 +16,11 @@ Nothing is logged except timestamps: this repo's Actions logs are public.
 
 Environment: SLACK_BOT_TOKEN, ROUTES (comma-separated channel=owner/repo), DISPATCH_TOKEN (fine-grained
 token with Contents: read and write on the target repos), optional ROUTER_START (unix ts; ignore older
-messages), POLL_SECONDS (default 10), LISTEN_MINUTES (default 340).
+messages), ROUTER_ANY_THREAD (channels where replies under any bot's post count, e.g. #meta-ads),
+POLL_SECONDS (default 10), LISTEN_MINUTES (default 340).
+
+Routes (Oct 2026): #serpdental-website-requests -> ascendpoint/serpdental-site (website robot),
+#meta-ads -> ascendpoint/ads-assistant (questions about ads / Zoom / Typeform / GHL data).
 """
 from __future__ import annotations
 
@@ -49,8 +53,14 @@ def done_by_bot(msg: dict, bot_user: str) -> bool:
     return any(r.get("name") in DONE and bot_user in r.get("users", []) for r in msg.get("reactions", []))
 
 
+def any_thread_channels() -> set[str]:
+    """Channels (ROUTER_ANY_THREAD, comma-separated) where a reply counts in any thread that has a bot post in it,
+    not only threads this bot is in (e.g. #meta-ads: replies under a daily report that Zapier posted)."""
+    return {c.strip() for c in (os.environ.get("ROUTER_ANY_THREAD") or "").split(",") if c.strip()}
+
+
 def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float = 0.0,
-            now: float | None = None, cache: dict | None = None) -> list[dict]:
+            now: float | None = None, cache: dict | None = None, any_thread: bool = False) -> list[dict]:
     """New requests in `channel`, oldest first: [{"ts", "thread_ts"}]."""
     now = now or time.time()
     oldest = max(start, now - MAX_AGE)
@@ -65,7 +75,8 @@ def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float
             if quiet.get(m["ts"]) == marker:
                 continue
             thread = slack.call("conversations.replies", channel=channel, ts=m["ts"], limit=200).get("messages", [])
-            bot_in_thread = any(x.get("user") == bot_user for x in thread)
+            bot_in_thread = any(x.get("user") == bot_user for x in thread) or \
+                (any_thread and any(x.get("bot_id") for x in thread))
             found = False
             for r in thread[1:]:
                 if float(r["ts"]) < oldest or not bot_in_thread:
@@ -104,9 +115,11 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
             cache["auth"] = auth
     bot_user, bot_id = auth["user_id"], auth.get("bot_id")
     sent = 0
+    anyt = any_thread_channels()
     for channel, repo in routes.items():
         try:
-            items = pending(slack, channel, bot_user, bot_id, start=start, now=now, cache=cache)
+            items = pending(slack, channel, bot_user, bot_id, start=start, now=now, cache=cache,
+                            any_thread=channel in anyt)
         except Exception as e:
             print(f"poll {channel} failed: {type(e).__name__}", file=sys.stderr, flush=True)
             continue
