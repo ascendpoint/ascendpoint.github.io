@@ -4,3 +4,5 @@ dist-staging/
 __pycache__/
 *.pyc
 .secrets/
+# attachments the website robot downloads from Slack for a request
+.request-files/

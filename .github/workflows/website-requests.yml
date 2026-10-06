@@ -95,7 +95,7 @@ jobs:
       - name: Install tools
         if: steps.gate.outputs.go == 'true'
         run: |
-          pip install pillow playwright
+          pip install -r tools/requirements-robot.txt
           python -m playwright install --with-deps chromium   # tools/screenshot.py: the robot looks at its work
           npm install -g @anthropic-ai/claude-code
 

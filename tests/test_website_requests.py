@@ -18,6 +18,17 @@ sys.path.insert(0, str(ROOT / "tools"))
 import website_requests as wr  # noqa: E402
 
 BOT = "UBOT"
+
+
+def png_bytes(size=(600, 800), colour=(40, 60, 120)):
+    import io
+    from PIL import Image
+    buf = io.BytesIO()
+    Image.new("RGB", size, colour).save(buf, "PNG")
+    return buf.getvalue()
+
+
+PNG_BYTES = png_bytes()
 NOW = 1_800_000_000.0
 
 
@@ -43,6 +54,9 @@ class FakeSlack:
 
     def download(self, url, dest):
         dest.write_bytes(b"fake")
+
+    def file_url(self, f):
+        return f.get("url") or "https://files/x"
 
 
 def msg(ts, user="UPAT", text="Change the hero headline", **kw):
@@ -165,6 +179,81 @@ class SelectionTests(unittest.TestCase):
         self.assertEqual(req["files"][0]["name"], "shot.png")
 
 
+    def test_followup_carries_photos_posted_earlier_in_the_thread(self):
+        photo = {"id": "FPHOTO", "name": "Tyler Headshot.png", "mimetype": "image/png",
+                 "url_private": "https://files/tyler", "url_private_download": "https://files/tyler/download"}
+        top = msg(NOW - 300, user="UKYLE", text="Please update Tylers headshot with this photo", files=[photo],
+                  subtype="file_share", reply_count=3,
+                  reactions=[{"name": "speech_balloon", "users": [BOT]}])
+        bot_file = {"id": "FBOT", "name": "screenshot.png", "url_private": "https://files/bot"}
+        thread = [top, msg(NOW - 200, user=BOT, text="💬 I couldn't...", files=[bot_file]),
+                  msg(NOW - 100, user="UKYLE", text="retry")]
+        req = wr.find_next(FakeSlack([top], {top["ts"]: thread}), "C1", now=NOW)
+        self.assertEqual(req["kind"], "followup")
+        self.assertEqual([f["id"] for f in req["files"]], ["FPHOTO"])      # the bot's own files never count
+        self.assertEqual(req["files"][0]["where"], "earlier in this thread")
+        self.assertEqual(req["files"][0]["url"], "https://files/tyler/download")
+
+    def test_new_photo_in_a_reply_comes_first(self):
+        old = {"id": "F1", "name": "a.png", "url_private": "https://files/a"}
+        new = {"id": "F2", "name": "b.png", "url_private": "https://files/b"}
+        top = msg(NOW - 300, text="Swap the hero photo", files=[old], reply_count=2,
+                  reactions=[{"name": "white_check_mark", "users": [BOT]}])
+        thread = [top, msg(NOW - 200, user=BOT, text="✅ Live"),
+                  msg(NOW - 100, text="use this one instead", files=[new], subtype="file_share")]
+        req = wr.find_next(FakeSlack([top], {top["ts"]: thread}), "C1", now=NOW)
+        self.assertEqual([(f["id"], f["where"]) for f in req["files"]],
+                         [("F2", "this message"), ("F1", "earlier in this thread")])
+
+    def test_photo_without_words_is_a_request(self):
+        h = [msg(NOW - 10, text="", subtype="file_share", files=[{"id": "F1", "name": "logo.png",
+                                                                  "url_private": "https://files/l"}])]
+        self.assertIsNotNone(wr.find_next(FakeSlack(h), "C1", now=NOW))
+
+
+class DownloadTests(unittest.TestCase):
+    class Resp:
+        def __init__(self, body, ctype):
+            self.body, self.headers = body, {"Content-Type": ctype}
+
+        def read(self, n=-1):
+            return self.body
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *a):
+            return False
+
+    def slack(self, body, ctype, seen=None):
+        def opener(req, timeout=0):
+            if seen is not None:
+                seen.append(req)
+            return self.Resp(body, ctype)
+        return wr.Slack("xoxb-test", opener=opener)
+
+    def test_saves_a_real_file_with_the_bot_token(self):
+        seen, dest = [], Path(tempfile.mkdtemp()) / "a.png"
+        self.slack(PNG_BYTES, "image/png", seen).download("https://files.slack.com/x", dest)
+        self.assertEqual(dest.read_bytes(), PNG_BYTES)
+        self.assertEqual(seen[0].get_header("Authorization"), "Bearer xoxb-test")
+
+    def test_sign_in_page_is_an_error_not_a_photo(self):
+        dest = Path(tempfile.mkdtemp()) / "a.png"
+        for body, ctype in ((b"<!DOCTYPE html><html>Sign in</html>", "text/html; charset=utf-8"),
+                            (b"<html><body>Sign in</body></html>", "application/octet-stream")):
+            with self.assertRaises(wr.FileError) as cm:
+                self.slack(body, ctype).download("https://files.slack.com/x", dest)
+            self.assertIn("files:read", str(cm.exception))
+        self.assertFalse(dest.exists())
+
+    def test_missing_link_is_looked_up(self):
+        s = wr.Slack("t")
+        s.call = lambda method, **p: {"ok": True, "file": {"url_private_download": f"https://dl/{p['file']}"}}
+        self.assertEqual(s.file_url({"id": "F9", "file_access": "check_file_info"}), "https://dl/F9")
+        self.assertEqual(s.file_url({"url_private": "https://u"}), "https://u")
+
+
 class ListenTests(unittest.TestCase):
     def test_listener_picks_up_a_request_that_arrives_mid_poll(self):
         fake = FakeSlack([])
@@ -200,6 +289,31 @@ class ListenTests(unittest.TestCase):
         top["latest_reply"] = f"{NOW - 100:.6f}"
         req = wr.find_next(fake, "C1", now=NOW, cache=cache)
         self.assertEqual(req["kind"], "undo")
+
+
+    def test_restarted_listener_installs_new_packages_first(self):
+        clock = {"t": NOW}
+        calls = []
+        with mock.patch.object(wr, "install_requirements", lambda: calls.append("pip")), \
+             mock.patch.object(wr, "sh", lambda *a, **k: None), \
+             mock.patch.dict(os.environ, {"LISTEN_UNTIL": str(NOW + 5)}):
+            wr.listen(FakeSlack([]), "C1", "https://x", minutes=1, poll=10,
+                      sleep=lambda s: clock.__setitem__("t", clock["t"] + s), clock=lambda: clock["t"])
+        self.assertEqual(calls, ["pip"])
+        calls.clear()
+        with mock.patch.object(wr, "install_requirements", lambda: calls.append("pip")), \
+             mock.patch.object(wr, "sh", lambda *a, **k: None):
+            os.environ.pop("LISTEN_UNTIL", None)
+            wr.listen(FakeSlack([]), "C1", "https://x", minutes=0.1, poll=10,
+                      sleep=lambda s: clock.__setitem__("t", clock["t"] + s), clock=lambda: clock["t"])
+        self.assertEqual(calls, [])          # a fresh run: the workflow already installed them
+
+    def test_requirements_cover_photo_tools(self):
+        reqs = (ROOT / "tools/requirements-robot.txt").read_text()
+        for pkg in ("pillow", "pillow-heif", "opencv-python-headless", "playwright"):
+            self.assertIn(pkg, reqs)
+        self.assertIn("pip install -r tools/requirements-robot.txt",
+                      (ROOT / ".github/workflows/website-requests.yml").read_text())
 
 
 class WaitLiveTests(unittest.TestCase):
@@ -285,8 +399,9 @@ class EndToEndTests(unittest.TestCase):
         self.repo = self.tmp / "repo"
         subprocess.run(["git", "clone", "-q", str(ROOT), str(self.repo)], check=True)
         # include uncommitted robot files so the test runs before they are committed
-        for rel in ("tools/website_requests.py", "tools/img_for_web.py"):
+        for rel in ("tools/website_requests.py", "tools/img_for_web.py", ".gitignore"):
             shutil.copy(ROOT / rel, self.repo / rel)
+        shutil.copytree(ROOT / "tools/models", self.repo / "tools/models", dirs_exist_ok=True)
         subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
         subprocess.run(["git", "-C", str(self.repo), "-c", "user.name=t", "-c", "user.email=t@t",
                         "commit", "-qm", "robot files", "--allow-empty"], check=True)
@@ -457,6 +572,96 @@ pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary":
         self.assertEqual(reaction, "leftwards_arrow_with_hook", text)
         self.assertEqual(about.read_text(), before)
         self.assertEqual(wr.thread_commits("1.000000"), [])
+
+    # ---- photos posted in Slack
+    def photo_req(self, text="Please update Tylers headshot in the team section with this attached photo",
+                  **kw):
+        r = self.req(text, **kw)
+        r["files"] = [{"id": "FPHOTO", "name": "Tyler Headshot.png", "mimetype": "image/png",
+                       "url": "https://files/tyler", "where": "this message"}]
+        return r
+
+    class PhotoSlack(FakeSlack):
+        def __init__(self, body=None):
+            super().__init__([])
+            self.body = body if body is not None else (ROOT / "site/img/hs-kyle-sq.webp").read_bytes()
+
+        def download(self, url, dest):
+            if self.body is None or self.body.startswith(b"<html"):
+                raise wr.FileError("Slack sent a sign-in page instead of the file (the Slack app needs the "
+                                   "files:read permission)")
+            dest.write_bytes(self.body)
+
+    def test_headshot_from_slack_ships_under_a_new_file_name(self):
+        result, prompt_out = self.tmp / "result.json", self.tmp / "prompt.txt"
+        files = self.repo / ".request-files"
+        self.fake_claude(f"""
+import json, pathlib, subprocess, sys
+args = sys.argv[1:]
+pathlib.Path('{prompt_out}').write_text(json.dumps(args))
+src = sorted(p for p in pathlib.Path('.request-files').iterdir() if '.view.' not in p.name)[0]
+out = subprocess.run(['python3', 'tools/img_for_web.py', str(src), '--replace', 'site/img/hs-tyler-sq.webp'],
+                     capture_output=True, text=True)
+assert out.returncode == 0, out.stdout + out.stderr
+pathlib.Path('{result}').write_text(json.dumps({{"status": "changed",
+  "summary": "Updated Tyler's headshot on the About page.", "pages": ["/about/"]}}))
+print(json.dumps({{"result": "done", "total_cost_usd": 0.08}}))
+""")
+        with mock.patch.object(wr, "FILES_DIR", files):
+            reaction, text = wr.handle(self.photo_req(), self.PhotoSlack(), "https://ascendpoint.agency")
+        self.assertEqual(reaction, "white_check_mark", text)
+        about = (self.repo / "site/pages/about.html").read_text()
+        self.assertNotIn('src="/img/hs-tyler-sq.webp"', about)
+        self.assertRegex(about, r'src="/img/hs-tyler-sq-[0-9a-f]{6}\.webp"')
+        self.assertFalse((self.repo / "site/img/hs-tyler-sq.webp").exists())
+        committed = wr.sh("git", "show", "--stat", "HEAD").stdout
+        self.assertNotIn(".request-files", committed)            # attachments never get committed
+        args = json.loads(prompt_out.read_text())
+        prompt = args[args.index("-p") + 1]
+        self.assertIn(".request-files/Tyler-Headshot.png: photo/image 320x320", prompt)
+        self.assertIn("a face was found", prompt)
+        self.assertIn(str(files), args[args.index("--add-dir") + 1])   # Claude may open the attachments
+        self.assertIn("Bash(python3 tools/img_for_web.py:*)", args[args.index("--allowedTools") + 1])
+
+    def test_attachment_that_cannot_be_downloaded_is_a_clear_warning(self):
+        self.fake_claude("import sys; sys.exit('claude must not run')")
+        with mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_OWNER": "UKYLE"}), \
+                mock.patch.object(wr, "FILES_DIR", self.repo / ".request-files"):
+            reaction, text = wr.handle(self.photo_req(), self.PhotoSlack(b"<html>sign in</html>"), "https://x")
+        self.assertEqual(reaction, "warning")
+        self.assertIn("couldn't open the file you attached", text)
+        self.assertIn("files:read", text)
+        self.assertIn("<@UKYLE>", text)
+        self.assertEqual(self.shipped, [])
+
+    def test_stale_attachments_from_an_earlier_request_are_cleared(self):
+        files = self.repo / ".request-files"
+        files.mkdir()
+        (files / "old-request.png").write_bytes(PNG_BYTES)
+        seen = self.tmp / "seen.txt"
+        self.fake_claude(f"""
+import pathlib
+pathlib.Path('{seen}').write_text(" ".join(sorted(p.name for p in pathlib.Path('.request-files').iterdir())))
+""")
+        with mock.patch.object(wr, "FILES_DIR", files):
+            wr.handle(self.photo_req(), self.PhotoSlack(), "https://x")
+        self.assertEqual(seen.read_text(), "Tyler-Headshot.png")
+
+    def test_blocked_tool_is_flagged_to_the_owner(self):
+        result = self.tmp / "result.json"
+        self.fake_claude(f"""
+import json, pathlib
+pathlib.Path('{result}').write_text(json.dumps({{"status": "question",
+  "question": "I couldn't process the photo."}}))
+print(json.dumps({{"result": "x", "permission_denials": [{{"tool_name": "Bash",
+  "tool_input": {{"command": "python3 -c 'from PIL import Image'"}}}}]}}))
+""")
+        with mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_OWNER": "UKYLE"}), \
+                mock.patch.object(wr, "FILES_DIR", self.repo / ".request-files"):
+            reaction, text = wr.handle(self.photo_req(), self.PhotoSlack(), "https://x")
+        self.assertEqual(reaction, "speech_balloon")
+        self.assertIn("<@UKYLE>", text)
+        self.assertIn("python3 -c", text)
 
     def sh_no_remote(self, *args, **kw):
         if args[:2] in (("git", "push"), ("gh", "workflow")):

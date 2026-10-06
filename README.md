@@ -33,6 +33,22 @@ What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 
 Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
 
+**Photos (headshots, logos, pictures): just attach them in Slack.** Drag the photo into the message, e.g.
+"Update Tyler's headshot in the team section with this photo", or post a photo with no words in a thread to
+say "use this one". Any format works, including iPhone HEIC. The robot:
+- downloads every attachment (and, for "retry" or a follow-up, the photos posted earlier in that thread),
+  checks it's a real image and looks at it;
+- to **swap** a picture already on the site runs `tools/img_for_web.py <photo> --replace <current image>`:
+  same size and shape as before, people are framed on their face the way the old photo was (OpenCV face
+  finder), the file gets a **new name** (images are cached for 30 days, so reusing the old name would keep
+  showing the old picture), and every page that used it is updated;
+- to **add** a picture makes a web-ready .webp (new team member: 320x320 `hs-<firstname>-sq.webp`,
+  `--headshot`) and adds it with proper alt text;
+- screenshots the page and looks before publishing. Reply **undo** to put the old picture back.
+If Slack won't hand over the file (e.g. the app lost `files:read`), it says so with ⚠️ and @mentions the
+owner instead of guessing. If Claude is ever blocked from a step, the 💬 reply names the blocked step for
+the owner. By hand: `python3 tools/img_for_web.py --help`.
+
 **Three models, picked per request (cheapest that does the job well).** Short text-only edits (a typo, a
 phone number, a date, a one-line wording swap) use Claude Haiku: a fraction of Sonnet's cost. Everyday edits
 (text, links, photos, removing things) use Claude Sonnet: fast and cheap (typically 20-60 s of work,
@@ -60,7 +76,9 @@ must look at the result before it publishes. The ✅ reply names the model used 
 How it works: `.github/workflows/website-requests.yml` keeps one listener running in GitHub Actions
 (polls Slack every 10 s for ~5.7 h, then starts its successor; the 15-minute cron is a backup; free on a public repo; no one's
 computer needs to be on). `tools/website_requests.py` does the work: Claude Code in
-headless mode with a tight tool allowlist (edit `site/` only, run the build; no git, no web, no shell),
+headless mode with a tight tool allowlist (edit `site/` only, run the build, the image tool and the
+screenshot tool; no git, no web, no other shell; Slack attachments are downloaded into the git-ignored
+`.request-files/`), packages from `tools/requirements-robot.txt`,
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
 `/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 🔍 preview waiting for approval, 🗑️ preview
@@ -162,6 +180,8 @@ dates, `feed.xml`, `llms.txt`, `robots.txt`, `_headers`, and Google Tag Manager
 
 ### Common jobs
 
+- **Swap a photo (e.g. a team headshot):** `python3 tools/img_for_web.py new.jpg --replace site/img/hs-tyler-sq.webp`
+  (new file name, same size, face-framed, all references updated). Add one: `... new.jpg site/img/name.webp --width 1200`.
 - **New news article:** copy any file in `site/pages/news/`, rename it to the new slug, update
   front matter (`date`, `list_*`) and the body. It appears on /news/, in the sitemap and in the
   RSS feed automatically, newest first.

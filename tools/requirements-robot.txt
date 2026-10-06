@@ -1,0 +1,6 @@
+# Python packages the Slack website robot needs (installed by .github/workflows/website-requests.yml,
+# and re-installed by the listener itself when it restarts into new robot code).
+pillow
+pillow-heif                      # iPhone .heic photos posted in Slack
+opencv-python-headless>=4.8      # face-aware crops for headshots (tools/img_for_web.py)
+playwright                       # tools/screenshot.py: the robot looks at its work

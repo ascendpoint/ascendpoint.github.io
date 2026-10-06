@@ -30,6 +30,10 @@ Preview first ("preview", "send me a mockup", "show me before it goes live", ...
 Model per request: Haiku for short text-only edits, Sonnet for everyday edits, Opus for design/motion/new
 pages (see choose_model); Haiku falls back to Sonnet, and Opus repairs anything that fails the checks.
 
+Attachments (photos, logos, screenshots) are downloaded into .request-files/ (git-ignored), checked and
+described to Claude; follow-ups also get the photos posted earlier in the thread. tools/img_for_web.py swaps
+or adds images (new file names so caches never show the old picture; face-aware crops for headshots).
+
 State lives in Slack reactions: a message the bot has reacted to is never picked up again.
 
 Environment: SLACK_BOT_TOKEN, SLACK_CHANNEL_ID, ANTHROPIC_API_KEY, GITHUB_TOKEN (Actions),
@@ -93,7 +97,12 @@ GIT_USER = ("-c", "user.name=AscendPoint AI", "-c", "user.email=website-bot@asce
 IGNORE_RE = re.compile(r"^\s*(//|note:|fyi\b)", re.I)
 EMAIL_PREFIX = "📧"
 RESULT = Path("/tmp/website_request_result.json")
-FILES_DIR = Path("/tmp/website_request_files")
+# Files attached in Slack (photos, logos, screenshots) are downloaded INSIDE the repo (git-ignored) so the
+# headless Claude can open them: tools outside its working folder are refused in dontAsk mode.
+FILES_DIR = ROOT / ".request-files"
+SHOTS_DIR = Path("/tmp/website_request_shots")     # tools/screenshot.py output
+MAX_FILES = 10
+MAX_FILE_BYTES = 60 * 1024 * 1024
 BOT_NAME = "AscendPoint AI"
 # Model routing, cheapest model that can do the job well:
 #   simple   (CLAUDE_MODEL_SIMPLE, default Haiku: ~1/3 the price of Sonnet) short text-only edits: a typo, a
@@ -181,9 +190,34 @@ class Slack:
         return out
 
     def download(self, url: str, dest: Path):
+        """Save a Slack-hosted file. Slack answers a token without files:read (or an expired link) with its
+        sign-in WEB PAGE and status 200, so check we really got a file, not HTML."""
         req = urllib.request.Request(url, headers={"Authorization": f"Bearer {self.token}"})
-        with self.opener(req, timeout=60) as r:
-            dest.write_bytes(r.read())
+        with self.opener(req, timeout=120) as r:
+            ctype = (getattr(r, "headers", None) or {}).get("Content-Type", "") or ""
+            data = r.read(MAX_FILE_BYTES + 1)
+        if len(data) > MAX_FILE_BYTES:
+            raise FileError(f"{dest.name} is over {MAX_FILE_BYTES // 2**20} MB")
+        head = data[:300].lstrip().lower()
+        if "text/html" in ctype.lower() or head.startswith((b"<!doctype html", b"<html")):
+            raise FileError(f"Slack sent a sign-in page instead of {dest.name} (the Slack app needs the "
+                            "files:read permission)")
+        if not data:
+            raise FileError(f"{dest.name} came through empty")
+        dest.write_bytes(data)
+
+    def file_url(self, f: dict) -> str | None:
+        """Download URL of a file in a message. Files shared from elsewhere sometimes come without one
+        ("file_access": "check_file_info"): ask Slack for it."""
+        url = f.get("url_private_download") or f.get("url_private") or f.get("url")
+        if url or not f.get("id"):
+            return url
+        info = self.call("files.info", file=f["id"]).get("file") or {}
+        return info.get("url_private_download") or info.get("url_private")
+
+
+class FileError(RuntimeError):
+    """An attachment couldn't be fetched from Slack."""
 
 
 def is_handled(msg: dict, bot_user: str) -> bool:
@@ -273,6 +307,19 @@ def user_name(slack: Slack, uid: str | None) -> str:
         return uid
 
 
+def message_files(msg: dict, where: str) -> list[dict]:
+    """The files people attached to a Slack message (not an email Slack turned into a file)."""
+    out = []
+    for f in msg.get("files") or []:
+        if email_file({"files": [f]}) or f.get("mode") in ("tombstone", "external") or f.get("is_external"):
+            continue
+        if not (f.get("url_private") or f.get("url_private_download") or f.get("id")):
+            continue
+        out.append({"id": f.get("id"), "name": f.get("name") or f.get("title"), "mimetype": f.get("mimetype"),
+                    "url": f.get("url_private_download") or f.get("url_private"), "where": where})
+    return out
+
+
 def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bot_user: str) -> dict:
     thread_ts = msg.get("thread_ts") or msg["ts"]
     context = []
@@ -282,9 +329,20 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
         who = BOT_NAME if t.get("user") == bot_user else user_name(slack, t.get("user"))
         context.append(f"{who}: {t.get('text', '')}")
     text = msg.get("text", "")
-    files = [{"name": f.get("name"), "mimetype": f.get("mimetype"),
-              "url": f.get("url_private_download") or f.get("url_private")}
-             for f in msg.get("files", []) if f.get("url_private") and not email_file({"files": [f]})]
+    files = message_files(msg, "this message")
+    if thread_ts != msg["ts"]:
+        # A follow-up ("retry", "use the photo above", "make it smaller") still needs the photos posted
+        # earlier in the thread by people (not the bot), newest first.
+        for t in reversed(thread or []):
+            if float(t["ts"]) < float(msg["ts"]) and t.get("user") != bot_user and not t.get("bot_id"):
+                files += message_files(t, "earlier in this thread")
+    seen, unique = set(), []
+    for f in files:
+        key = f.get("id") or f.get("url")
+        if key not in seen:
+            seen.add(key)
+            unique.append(f)
+    files = unique[:MAX_FILES]
     sender = None
     em = email_file(msg)
     if em:
@@ -378,9 +436,23 @@ Rules:
   request needs information you don't have, or is ambiguous, risky (deleting pages, legal/privacy text,
   pricing, anything about clients) or not about this website, change NOTHING and ask one clear question.
 - Only edit files under site/. Never touch .github/, tools/, README.md or git. Do not run git.
-- Attached files (screenshots, photos, documents) are in {files_dir}. To put an image on the site run
-  `python3 tools/img_for_web.py <input> site/img/<descriptive-name>.webp --width <px>` and reference it.
-  Treat screenshots as reference for what to change unless the request says to use the image.
+- Photos and files attached in Slack are in {files_dir}/ (the request lists each one: size, whether a face was
+  found, and a .view.jpg copy to look at when the original can't be opened). Look at them with Read. USE them:
+  never ask for a file that is already attached, and never say you can't process images.
+- SWAP a picture that is already on the site (a team headshot, a logo, a photo): find the <img> on that page,
+  then run `python3 tools/img_for_web.py {files_dir}/<file> --replace site/img/<file the page uses now>`.
+  It matches the old image's size and shape, frames people on their face the way the old photo was,
+  saves it under a NEW file name and updates every page that uses it. Never overwrite an image file in place
+  and don't edit those references yourself (visitors' browsers and the host cache images for 30 days, so
+  the old picture would keep showing).
+- ADD a new picture: `python3 tools/img_for_web.py {files_dir}/<file> site/img/<descriptive-name>.webp`
+  with `--width <px>`, or `--size WxH` for an exact size (cropped around the face / centre). A new team
+  member's headshot matches the others: `--size 320x320 --headshot`, named hs-<firstname>-sq.webp. Then add
+  the <img> following the existing markup, with width/height and real alt text (the person's name).
+- `python3 tools/img_for_web.py --info <images>` shows size, orientation, where the face is and which pages
+  use an image. After any image change, screenshot the page and LOOK: if a head is cut off or off-centre,
+  redo it with `--focus X,Y` (0-1 shares of the photo's width/height).
+- Screenshots of the site are reference for what to change, unless the request says to put the image up.
 - When renaming or removing a page, add a 301 in site/_redirects so the old URL keeps working.
 - After editing, run `python3 tools/build.py` and fix every error it reports until it exits 0.
 - For anything visual (layout, styling, images, motion), LOOK at your work: after building, run
@@ -404,17 +476,91 @@ Rules:
 """
 
 
+def files_rel() -> str:
+    """FILES_DIR as Claude should write it: relative to the repo when it's inside it."""
+    try:
+        return FILES_DIR.relative_to(ROOT).as_posix()
+    except ValueError:
+        return str(FILES_DIR)
+
+
+def denied_tools(meta: dict) -> list[str]:
+    """Short descriptions of the tool calls Claude Code refused (its JSON result lists them)."""
+    out = []
+    for d in meta.get("permission_denials") or []:
+        inp = d.get("tool_input") or {}
+        what = inp.get("command") or inp.get("file_path") or inp.get("path") or inp.get("pattern") or ""
+        out.append(f"{d.get('tool_name', '?')} {str(what)[:160]}".strip())
+    return out
+
+
+def prepare_files(req: dict, slack: Slack) -> list[str]:
+    """Download the request's attachments into FILES_DIR (emptied first) and describe each one for Claude.
+    Raises FileError when an attachment of THIS message can't be fetched (older thread files are optional)."""
+    shutil.rmtree(FILES_DIR, ignore_errors=True)
+    FILES_DIR.mkdir(parents=True)
+    names: dict[str, str] = {}
+    for i, f in enumerate(req.get("files") or []):
+        base = re.sub(r"[^A-Za-z0-9._-]+", "-", f.get("name") or f"file-{i + 1}").strip("-.") or f"file-{i + 1}"
+        name, n = base, 2
+        while name in names.values():
+            stem, dot, ext = base.rpartition(".")
+            name = f"{stem}-{n}.{ext}" if dot else f"{base}-{n}"
+            n += 1
+        try:
+            url = slack.file_url(f)
+            if not url:
+                raise FileError(f"Slack didn't give a download link for {base}")
+            slack.download(url, FILES_DIR / name)
+        except Exception as e:
+            if f.get("where") == "this message":
+                raise e if isinstance(e, FileError) else FileError(f"couldn't download {base}: {e}")
+            print(f"skipped earlier thread file {base}: {e}", file=sys.stderr, flush=True)
+            continue
+        names[name] = f.get("where") or "this message"
+    if not names:
+        return []
+    facts = {}
+    r = sh("python3", "tools/img_for_web.py", "--prepare", str(FILES_DIR), check=False)
+    for line in r.stdout.splitlines():
+        try:
+            d = json.loads(line)
+            facts[d["file"]] = d
+        except Exception:
+            pass
+    out = []
+    for name, where in names.items():
+        d = facts.get(name, {})
+        if d.get("kind") == "image":
+            desc = (f"{files_rel()}/{name}: photo/image {d['width']}x{d['height']} "
+                    f"({'a face was found' if d.get('face') else 'no face found'})")
+            if d.get("view"):
+                desc += f"; look at {files_rel()}/{d['view']} (a viewable copy)"
+        elif str(d.get("kind", "")).startswith("broken"):
+            if where == "this message":
+                raise FileError(f"{name}: {d['kind']}")
+            (FILES_DIR / name).unlink(missing_ok=True)
+            continue
+        else:
+            desc = f"{files_rel()}/{name}: {d.get('kind') or 'file'}"
+        out.append(f"{desc} [posted {where}]")
+    return out
+
+
 def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
                fix_log: str | None = None, preview: bool = False) -> dict:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
+    SHOTS_DIR.mkdir(parents=True, exist_ok=True)
     RESULT.unlink(missing_ok=True)
     thread = "\n".join(req.get("context") or [])
-    files = sorted(p.name for p in FILES_DIR.iterdir())
+    attached = req.get("attached") or []
+    text = req["text"] if (req.get("text") or "").strip() else "(no words, just the attached file(s))"
     prompt = (
         f"Request from {req['requester']} (via {'email' if '(email)' in req['requester'] else 'Slack'}):\n"
-        f"<<<\n{req['text']}\n>>>\n"
+        f"<<<\n{text}\n>>>\n"
         + (f"\nEarlier messages in this Slack thread (oldest first):\n<<<\n{thread}\n>>>\n" if thread else "")
-        + (f"\nAttached files in {FILES_DIR}: {', '.join(files)}\n" if files else "")
+        + (f"\nAttached files, in {files_rel()}/:\n" + "\n".join(f"- {a}" for a in attached) + "\n"
+           if attached else "")
         + "\nDo what the request asks, following the rules."
         + ("\nThis change will be shown to the requester as a PREVIEW (a link to a separate preview copy of "
            "the site); nothing goes live until they approve it. So just make the change; never say you "
@@ -432,10 +578,12 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
     allowed = ",".join([
         "Read", "Edit", "Write", "Glob", "Grep",
         "Bash(python3 tools/build.py)", "Bash(python3 tools/build.py:*)",
-        "Bash(python3 tools/img_for_web.py:*)", "Bash(python3 tools/screenshot.py:*)", "Bash(ls:*)",
+        "Bash(python3 tools/img_for_web.py:*)", "Bash(python3 ./tools/img_for_web.py:*)",
+        "Bash(python3 tools/screenshot.py:*)", "Bash(python3 ./tools/screenshot.py:*)", "Bash(ls:*)",
     ])
     cmd = ["claude", "-p", prompt,
-           "--append-system-prompt", CLAUDE_RULES.format(files_dir=FILES_DIR, result=RESULT),
+           "--append-system-prompt", CLAUDE_RULES.format(files_dir=files_rel(), result=RESULT),
+           "--add-dir", str(FILES_DIR), "--add-dir", str(SHOTS_DIR),
            "--allowedTools", allowed,
            "--disallowedTools", "WebFetch,WebSearch,Bash(git:*),Bash(curl:*)",
            "--permission-mode", "dontAsk",
@@ -459,6 +607,9 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
     result.setdefault("summary", (meta.get("result") or "").strip()[:600])
     result["cost_usd"] = meta.get("total_cost_usd")
     result["claude_exit"] = r.returncode
+    result["denied"] = denied_tools(meta)
+    if result["denied"]:     # a blocked tool is a robot problem, not the requester's: log it for the owner
+        print("claude was blocked from: " + " | ".join(result["denied"]), file=sys.stderr, flush=True)
     if (meta.get("is_error") or r.returncode != 0) and not RESULT.exists():
         result["status"] = "error"     # Claude itself failed (API key, credits, outage...): not a question
         result["error"] = (meta.get("result") or r.stdout or "")[-500:].strip()
@@ -716,10 +867,13 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
 
 
 def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str, str]:
-    FILES_DIR.mkdir(parents=True, exist_ok=True)
-    for i, f in enumerate(req.get("files", [])):
-        name = re.sub(r"[^A-Za-z0-9._-]+", "-", f.get("name") or f"file-{i}")
-        slack.download(f["url"], FILES_DIR / name)
+    try:
+        req["attached"] = prepare_files(req, slack)
+    except FileError as e:
+        owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
+        return "warning", ("⚠️ I couldn't open the file you attached, so nothing was changed. "
+                           f"{f'<@{owner}> ' if owner else ''}has been flagged; once it's fixed, reply *retry* "
+                           f"here (or post the file again).\n`{str(e)[:300]}`")
 
     model, tier = choose_model(req)
     result = run_claude(req, model, budget(tier), preview=preview)
@@ -743,7 +897,11 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
     if result.get("status") == "question" or not files:
         reset_worktree()
         q = result.get("question") or result.get("summary") or "I wasn't sure what to change. Can you say a bit more?"
-        return "speech_balloon", f"💬 {q}\n_Reply in this thread and I'll pick it up._"
+        blocked = result.get("denied") or []
+        owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
+        note = (f"\n_Robot note for <@{owner}>: a step was blocked (`{blocked[0][:120]}`)._"
+                if blocked and owner else "")
+        return "speech_balloon", f"💬 {q}\n_Reply in this thread and I'll pick it up._{note}"
 
     ok, log = checks()
     fixed_by = None
@@ -844,11 +1002,22 @@ def finish(slack: Slack, req: dict, live: str) -> str:
     return reaction
 
 
+def install_requirements():
+    """pip install tools/requirements-robot.txt (the workflow does this at start; a listener that restarts
+    into newer robot code does it again so new packages, e.g. for face-aware photo crops, are there)."""
+    reqs = ROOT / "tools" / "requirements-robot.txt"
+    if reqs.exists():
+        r = sh(sys.executable, "-m", "pip", "install", "-q", "-r", str(reqs), check=False, timeout=900)
+        print("requirements:", "ok" if r.returncode == 0 else r.stdout[-400:], flush=True)
+
+
 def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
            start: float = 0.0, allowed: set[str] | None = None, sleep=time.sleep, clock=time.time) -> int:
     """Near-instant mode: poll the channel every `poll` seconds for `minutes`, handling requests
     one at a time as they arrive. The workflow restarts it so one listener is always running."""
     end = float(os.environ.get("LISTEN_UNTIL") or 0) or clock() + minutes * 60
+    if os.environ.get("LISTEN_UNTIL"):
+        install_requirements()     # restarted into new robot code: it may need new packages
     me = Path(__file__).resolve()
     my_code = me.read_bytes()
     last_pull = clock()
