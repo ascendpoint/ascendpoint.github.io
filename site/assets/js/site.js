@@ -16,6 +16,10 @@ if(form){
   form.hidden=true;var th=document.getElementById('thanks');th.hidden=false;th.focus();});
  var again=document.getElementById('again');if(again)again.addEventListener('click',function(){form.reset();form.hidden=false;document.getElementById('thanks').hidden=true;});
 }
+/* Time-limited items (banner, training cards) hide themselves after their data-hide-after time. */
+var now=Date.now();
+document.querySelectorAll('[data-hide-after]').forEach(function(e){if(now>=Date.parse(e.getAttribute('data-hide-after')))e.hidden=true;});
+document.querySelectorAll('[data-hide-if-empty]').forEach(function(s){if(!s.querySelector('[data-hide-after]:not([hidden])'))s.hidden=true;});
 /* About timeline: entries start light and darken as they scroll into view. */
 var tl=document.querySelector('.tl');
 if(tl&&'IntersectionObserver' in window&&!matchMedia('(prefers-reduced-motion: reduce)').matches){
