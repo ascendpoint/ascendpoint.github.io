@@ -381,6 +381,7 @@ sup.tm{font-size:.62em;vertical-align:.5em;line-height:0;margin-left:.03em}
 .announce strong{font-weight:700}
 .announce-tag{font:700 11px/1 var(--display);letter-spacing:.16em;text-transform:uppercase;background:var(--prussian);color:var(--white);padding:6px 10px;border-radius:999px}
 .announce-cta{font:700 14px/1 var(--display);text-decoration:underline;text-underline-offset:3px}
+.announce[hidden],.card[hidden],.sec[hidden]{display:none}
 @media (max-width:640px){.announce{font-size:14px;gap:8px}.announce-cta{display:none}}
 .foot-btn{align-self:flex-start;min-height:46px;padding:0 22px;font-size:14px;margin-top:6px}
 
