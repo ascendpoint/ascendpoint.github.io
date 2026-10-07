@@ -404,10 +404,21 @@ def url_for(path: str) -> str | None:
     return "/" + rel.as_posix().strip("/") + "/"
 
 
+TEST_ENV_DROP = ("SLACK_BOT_TOKEN", "ANTHROPIC_API_KEY", "GITHUB_TOKEN", "GH_TOKEN", "SEVALLA_API_KEY",
+                 "SERPDENTAL_DISPATCH_TOKEN", "DISPATCH_TOKEN")
+
+
 def checks() -> tuple[bool, str]:
+    """Everything CI runs before a deploy: the robot's own tests too, so a change can never land on main
+    and then sit there undeployed because CI refused it (tests run with every secret removed)."""
     log = []
-    for cmd in (["python3", "tools/build.py"], ["python3", "tools/test_redirects.py"]):
-        r = sh(*cmd, check=False)
+    test_env = {k: v for k, v in os.environ.items() if k not in TEST_ENV_DROP}
+    test_env["ROBOT_TESTS_RUNNING"] = "1"            # the tests call checks() too: don't recurse
+    steps = [(["python3", "tools/build.py"], None), (["python3", "tools/test_redirects.py"], None)]
+    if not os.environ.get("ROBOT_TESTS_RUNNING"):
+        steps.append((["python3", "-m", "unittest", "discover", "-s", "tests", "-q"], test_env))
+    for cmd, env in steps:
+        r = sh(*cmd, check=False, env=env, timeout=900)
         log.append(r.stdout[-3000:])
         if r.returncode != 0:
             return False, "\n".join(log)

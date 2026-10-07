@@ -3,6 +3,7 @@
     python3 -m unittest discover -s tests -v
 """
 import json
+import re
 import os
 import shutil
 import subprocess
@@ -16,6 +17,8 @@ from unittest import mock
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import website_requests as wr  # noqa: E402
+
+os.environ["ROBOT_TESTS_RUNNING"] = "1"     # checks() inside these tests must not run the test suite again
 
 BOT = "UBOT"
 
@@ -382,6 +385,46 @@ class ModelRoutingTests(unittest.TestCase):
         self.assertEqual(self.pick("fix a typo", env={"CLAUDE_MODEL": "haiku"})[0], "haiku")
 
 
+class ChecksTests(unittest.TestCase):
+    def test_robot_runs_the_ci_tests_before_shipping_without_secrets(self):
+        ran = []
+        def fake_sh(*args, **kw):
+            ran.append((args, kw.get("env")))
+            return subprocess.CompletedProcess(args, 0, "ok", "")
+        with mock.patch.object(wr, "sh", fake_sh), \
+                mock.patch.dict(os.environ, {"SLACK_BOT_TOKEN": "xoxb-secret", "ANTHROPIC_API_KEY": "sk-secret"}):
+            os.environ.pop("ROBOT_TESTS_RUNNING")
+            try:
+                ok, _ = wr.checks()
+            finally:
+                os.environ["ROBOT_TESTS_RUNNING"] = "1"
+        self.assertTrue(ok)
+        cmds = [a for a, _ in ran]
+        self.assertIn(("python3", "-m", "unittest", "discover", "-s", "tests", "-q"), cmds)
+        env = dict(ran[-1][1])
+        self.assertNotIn("SLACK_BOT_TOKEN", env)
+        self.assertNotIn("ANTHROPIC_API_KEY", env)
+        self.assertEqual(env["ROBOT_TESTS_RUNNING"], "1")
+
+    def test_failing_tests_block_the_change(self):
+        def fake_sh(*args, **kw):
+            code = 1 if "unittest" in args else 0
+            return subprocess.CompletedProcess(args, code, "FAILED (failures=1)", "")
+        with mock.patch.object(wr, "sh", fake_sh), mock.patch.dict(os.environ, {}):
+            os.environ.pop("ROBOT_TESTS_RUNNING")
+            try:
+                ok, log = wr.checks()
+            finally:
+                os.environ["ROBOT_TESTS_RUNNING"] = "1"
+        self.assertFalse(ok)
+        self.assertIn("FAILED", log)
+
+    def test_tests_never_depend_on_live_image_names(self):
+        # the robot renames images every time a photo is swapped, so a test that names one would break CI
+        for t in (ROOT / "tests").glob("test_*.py"):
+            self.assertNotRegex(t.read_text(), r"site/img/hs-[a-z]+-sq\.webp", t.name)
+
+
 class UrlTests(unittest.TestCase):
     def test_url_for(self):
         self.assertEqual(wr.url_for("site/pages/index.html"), "/")
@@ -446,7 +489,7 @@ class EndToEndTests(unittest.TestCase):
         self.fake_claude(f"""
 import json, pathlib, re
 p = pathlib.Path('site/pages/about.html'); s = p.read_text()
-s = s.replace('Building the leading', 'Building the best', 1); p.write_text(s)
+s = s.replace('</h1>', ' (robot test)</h1>', 1); p.write_text(s)
 pathlib.Path('{result}').write_text(json.dumps({{"status": "changed",
   "summary": "Changed the About page headline.", "pages": ["/about/"]}}))
 print(json.dumps({{"result": "done", "total_cost_usd": 0.12}}))
@@ -541,7 +584,7 @@ print(json.dumps({{"result": "ok", "total_cost_usd": 0.10}}))
         result = self.tmp / "result.json"
         self.fake_claude(f"""
 import json, pathlib
-p = pathlib.Path('site/pages/about.html'); p.write_text(p.read_text().replace('Building the leading', 'Building the best', 1))
+p = pathlib.Path('site/pages/about.html'); p.write_text(p.read_text().replace('</h1>', ' (robot test)</h1>', 1))
 pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary": "Animated the About hero."}}))
 print(json.dumps({{"result": "done", "total_cost_usd": 1.5}}))
 """)
@@ -565,7 +608,7 @@ pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary":
     def test_undo_reverts_the_threads_commits(self):
         about = self.repo / "site/pages/about.html"
         before = about.read_text()
-        about.write_text(before.replace("Building the leading", "Building the best", 1))
+        about.write_text(before.replace("</h1>", " (robot test)</h1>", 1))
         self.fake_ship(self.req(), "Headline change")
         with mock.patch.object(wr, "sh", self.sh_no_remote):
             reaction, text = wr.handle(self.req("undo", kind="undo", ts="2.000000"), FakeSlack([]), "https://x")
@@ -584,7 +627,7 @@ pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary":
     class PhotoSlack(FakeSlack):
         def __init__(self, body=None):
             super().__init__([])
-            self.body = body if body is not None else (ROOT / "site/img/hs-kyle-sq.webp").read_bytes()
+            self.body = body if body is not None else (ROOT / "tests/fixtures/headshot-b.webp").read_bytes()
 
         def download(self, url, dest):
             if self.body is None or self.body.startswith(b"<html"):
@@ -592,28 +635,35 @@ pathlib.Path('{result}').write_text(json.dumps({{"status": "changed", "summary":
                                    "files:read permission)")
             dest.write_bytes(self.body)
 
+    def current_headshot(self) -> str:
+        """The first team photo on the About page, whatever it is called today (the robot renames them)."""
+        about = (self.repo / "site/pages/about.html").read_text()
+        return re.search(r'<img src="/(img/[^"]+)"[^>]*class="bio-photo"', about).group(1)
+
     def test_headshot_from_slack_ships_under_a_new_file_name(self):
         result, prompt_out = self.tmp / "result.json", self.tmp / "prompt.txt"
         files = self.repo / ".request-files"
+        old = self.current_headshot()                       # e.g. img/hs-sonia-sq.webp
+        stem = re.sub(r"-[0-9a-f]{6}$", "", Path(old).stem)
         self.fake_claude(f"""
 import json, pathlib, subprocess, sys
 args = sys.argv[1:]
 pathlib.Path('{prompt_out}').write_text(json.dumps(args))
 src = sorted(p for p in pathlib.Path('.request-files').iterdir() if '.view.' not in p.name)[0]
-out = subprocess.run(['python3', 'tools/img_for_web.py', str(src), '--replace', 'site/img/hs-tyler-sq.webp'],
+out = subprocess.run(['python3', 'tools/img_for_web.py', str(src), '--replace', 'site/{old}'],
                      capture_output=True, text=True)
 assert out.returncode == 0, out.stdout + out.stderr
 pathlib.Path('{result}').write_text(json.dumps({{"status": "changed",
-  "summary": "Updated Tyler's headshot on the About page.", "pages": ["/about/"]}}))
+  "summary": "Updated the headshot on the About page.", "pages": ["/about/"]}}))
 print(json.dumps({{"result": "done", "total_cost_usd": 0.08}}))
 """)
         with mock.patch.object(wr, "FILES_DIR", files):
             reaction, text = wr.handle(self.photo_req(), self.PhotoSlack(), "https://ascendpoint.agency")
         self.assertEqual(reaction, "white_check_mark", text)
         about = (self.repo / "site/pages/about.html").read_text()
-        self.assertNotIn('src="/img/hs-tyler-sq.webp"', about)
-        self.assertRegex(about, r'src="/img/hs-tyler-sq-[0-9a-f]{6}\.webp"')
-        self.assertFalse((self.repo / "site/img/hs-tyler-sq.webp").exists())
+        self.assertNotIn(f'src="/{old}"', about)
+        self.assertRegex(about, r'src="/img/' + re.escape(stem) + r'-[0-9a-f]{6}\.webp"')
+        self.assertFalse((self.repo / "site" / old).exists())
         committed = wr.sh("git", "show", "--stat", "HEAD").stdout
         self.assertNotIn(".request-files", committed)            # attachments never get committed
         args = json.loads(prompt_out.read_text())

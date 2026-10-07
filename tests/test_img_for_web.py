@@ -18,9 +18,13 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "tools"))
 import img_for_web as iw  # noqa: E402
 
+# Fixed test photos (copies of two team headshots), so the tests never depend on what the live site
+# currently calls its images: the robot renames them every time someone swaps a photo.
+FIX = ROOT / "tests" / "fixtures"
+
 try:
     import cv2  # noqa: F401
-    HAVE_CV = iw.find_face(Image.open(ROOT / "site/img/hs-kyle-sq.webp")) is not None
+    HAVE_CV = iw.find_face(Image.open(FIX / "headshot-b.webp")) is not None
 except Exception:
     HAVE_CV = False
 
@@ -34,8 +38,8 @@ class Site:
         self.img = self.site / "img"
         (self.site / "pages").mkdir(parents=True)
         self.img.mkdir()
-        for name in ("hs-tyler-sq.webp", "hs-adam-sq.webp"):
-            shutil.copy(ROOT / "site/img" / name, self.img / name)
+        shutil.copy(FIX / "headshot-a.webp", self.img / "hs-tyler-sq.webp")
+        shutil.copy(FIX / "headshot-b.webp", self.img / "hs-adam-sq.webp")
         Image.new("RGB", (50, 50), "red").save(self.img / "xhs-tyler-sq.webp")    # look-alike name
         self.about = self.site / "pages/about.html"
         self.about.write_text(
@@ -147,7 +151,7 @@ class ReplaceTests(unittest.TestCase):
     def test_headshot_is_framed_on_the_face_like_the_old_one(self):
         with Site() as s:
             # a "new photo": a known face placed off-centre, small, in a big portrait frame
-            face = Image.open(ROOT / "site/img/hs-kyle-sq.webp").convert("RGB")
+            face = Image.open(FIX / "headshot-b.webp").convert("RGB")
             big = Image.new("RGB", (1500, 1900), (200, 200, 205))
             big.paste(face, (900, 250))
             src = s.root / "new.png"

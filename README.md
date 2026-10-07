@@ -82,7 +82,7 @@ screenshot tool; no git, no web, no other shell; Slack attachments are downloade
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
 `/version.txt`. Slack reactions are the queue state (👀 working, ✅ live, 🔍 preview waiting for approval, 🗑️ preview
-dropped, 💬 question, ⚠️ failed, ↩️ undone, 🚫 email refused). Tests: `python3 -m unittest discover -s tests` (also run by CI on every push).
+dropped, 💬 question, ⚠️ failed, ↩️ undone, 🚫 email refused). Tests: `python3 -m unittest discover -s tests` (run by CI on every push, and by the robot itself before it commits, with secrets removed, so a change can never reach main and then sit undeployed). Tests use their own photos in `tests/fixtures/`, never live image names (the robot renames images on every swap).
 
 Settings (GitHub → Settings → Secrets and variables → Actions): secrets `ANTHROPIC_API_KEY` (pay-as-you-go
 key from the Claude Console, ideally in its own workspace "AscendPoint website robot" so Usage/Cost shows
