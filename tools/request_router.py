@@ -16,11 +16,16 @@ Nothing is logged except timestamps: this repo's Actions logs are public.
 
 Environment: SLACK_BOT_TOKEN, ROUTES (comma-separated channel=owner/repo), DISPATCH_TOKEN (fine-grained
 token with Contents: read and write on the target repos), optional ROUTER_START (unix ts; ignore older
-messages), ROUTER_ANY_THREAD (channels where replies under any bot's post count, e.g. #meta-ads),
-POLL_SECONDS (default 10), LISTEN_MINUTES (default 340).
+messages), ROUTER_ANY_THREAD (channels where replies under any bot's post count, e.g. #ad-intelligence),
+ROUTER_OWNER (Slack user @mentioned when a hand-off keeps failing; default Kyle), POLL_SECONDS (default 10),
+LISTEN_MINUTES (default 340).
+
+If a hand-off fails (e.g. the dispatch token can't reach the target repo), the router never goes quiet: it
+replies once in the thread with ⚠️ and the reason, @mentions the owner, and keeps retrying once a minute, so the
+message is answered automatically as soon as the problem is fixed.
 
 Routes (Oct 2026): #serpdental-website-requests -> ascendpoint/serpdental-site (website robot),
-#meta-ads -> ascendpoint/ads-assistant (questions about ads / Zoom / Typeform / GHL data).
+#ad-intelligence (was #meta-ads) -> ascendpoint/ads-assistant (questions + approved actions: Meta / Zoom / Typeform / GHL).
 """
 from __future__ import annotations
 
@@ -35,6 +40,14 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import website_requests as wr  # noqa: E402  (Slack client + "is this a request?" rules only)
 
 QUEUED = "inbox_tray"
+STUCK = "hourglass_flowing_sand"   # hand-off failing; still retried (not in DONE)
+RETRY_SECONDS = 60
+NOTICE_MARK = "couldn't hand this to the"
+DEFAULT_OWNER = "U04Q3M29UKE"      # Kyle Robins
+WHY = {401: "the router's GitHub token is invalid or expired",
+       403: "the router's GitHub token doesn't have permission on that repo",
+       404: "the router's GitHub token can't see that repo (add the repo to the token's Repository access)",
+       422: "GitHub rejected the request"}
 DONE = wr.HANDLED | {QUEUED}       # anything the bot already reacted to is never sent again
 MAX_AGE = wr.MAX_AGE
 
@@ -55,7 +68,7 @@ def done_by_bot(msg: dict, bot_user: str) -> bool:
 
 def any_thread_channels() -> set[str]:
     """Channels (ROUTER_ANY_THREAD, comma-separated) where a reply counts in any thread that has a bot post in it,
-    not only threads this bot is in (e.g. #meta-ads: replies under a daily report that Zapier posted)."""
+    not only threads this bot is in (e.g. #ad-intelligence: replies under a daily report that Zapier posted)."""
     return {c.strip() for c in (os.environ.get("ROUTER_ANY_THREAD") or "").split(",") if c.strip()}
 
 
@@ -89,7 +102,8 @@ def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float
     return sorted(out, key=lambda x: float(x["ts"]))
 
 
-def dispatch(repo: str, token: str, payload: dict, opener=None) -> bool:
+def dispatch(repo: str, token: str, payload: dict, opener=None, status: dict | None = None) -> bool:
+    """POST a repository_dispatch. On failure, status["code"] = the HTTP code (0 = network) for the notice."""
     opener = opener or urllib.request.urlopen
     req = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/dispatches",
@@ -101,8 +115,35 @@ def dispatch(repo: str, token: str, payload: dict, opener=None) -> bool:
         with opener(req, timeout=30) as r:
             return 200 <= getattr(r, "status", 204) < 300
     except Exception as e:
+        if status is not None:
+            status["code"] = int(getattr(e, "code", 0) or 0)
         print(f"dispatch to {repo} failed: {type(e).__name__} {getattr(e, 'code', '')}", file=sys.stderr, flush=True)
         return False
+
+
+def notify_stuck(slack, channel: str, it: dict, repo: str, code: int, bot_user: str, cache: dict | None):
+    """Say once, in the thread, that the hand-off is failing and why (so nobody waits on a silent bot)."""
+    noticed = cache.setdefault("noticed", set()) if cache is not None else set()
+    if it["ts"] in noticed:
+        return
+    noticed.add(it["ts"])
+    root = it["thread_ts"] or it["ts"]
+    try:   # already said so (e.g. before a router restart)? then don't repeat it
+        thread = slack.call("conversations.replies", channel=channel, ts=root, limit=200).get("messages", [])
+        if any(m.get("user") == bot_user and NOTICE_MARK in (m.get("text") or "") and float(m["ts"]) > float(it["ts"])
+               for m in thread):
+            return
+    except Exception:
+        pass
+    owner = os.environ.get("ROUTER_OWNER") or DEFAULT_OWNER
+    why = WHY.get(code, f"GitHub answered {code}" if code else "GitHub couldn't be reached")
+    try:
+        slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=STUCK)
+        slack.call("chat.postMessage", channel=channel, thread_ts=root, unfurl_links="false",
+                   text=f":warning: I saw this, but {NOTICE_MARK} `{repo}` robot: {why} (HTTP {code or 'network'}). "
+                        f"<@{owner}> can fix it; I'll keep retrying every minute and answer here automatically once it works.")
+    except Exception as e:
+        print(f"notice failed: {type(e).__name__}", file=sys.stderr, flush=True)
 
 
 def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, cache: dict | None = None,
@@ -123,13 +164,23 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
         except Exception as e:
             print(f"poll {channel} failed: {type(e).__name__}", file=sys.stderr, flush=True)
             continue
+        retry_at = cache.setdefault("retry_at", {}) if cache is not None else {}
+        t_now = now or time.time()
         for it in items:
+            if retry_at.get(it["ts"], 0) > t_now:      # a failing hand-off is retried once a minute, not every poll
+                continue
             slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=QUEUED)
-            if dispatch(repo, token, {"channel": channel, "ts": it["ts"], "thread_ts": it["thread_ts"]}, opener):
+            status: dict = {}
+            if dispatch(repo, token, {"channel": channel, "ts": it["ts"], "thread_ts": it["thread_ts"]}, opener, status):
                 print(f"queued {it['ts']} -> {repo}", flush=True)
                 sent += 1
-            else:   # take the marker off so the next poll retries it
+                retry_at.pop(it["ts"], None)
+                if cache is not None and it["ts"] in cache.get("noticed", set()):
+                    slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=STUCK)
+            else:   # take the marker off so it's retried, and tell the thread why it's stuck
                 slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=QUEUED)
+                retry_at[it["ts"]] = t_now + RETRY_SECONDS
+                notify_stuck(slack, channel, it, repo, status.get("code", 0), bot_user, cache)
     return sent
 
 

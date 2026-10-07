@@ -99,6 +99,49 @@ class RouterTests(unittest.TestCase):
         self.assertEqual(rr.route_once(s, {CH: REPO}, "tok", opener=self.opener(500)), 0)
         self.assertIn((f"{self.now - 30:.6f}", "inbox_tray"), s.reacted("reactions.remove"))
 
+    def opener_http(self, code):
+        import urllib.error
+
+        def _open(req, timeout=30):
+            self.sent.append((req.full_url, json.loads(req.data.decode()), req.headers))
+            raise urllib.error.HTTPError(req.full_url, code, "Not Found", {}, None)
+        return _open
+
+    def posts(self, s):
+        return [p for m, p in s.calls if m == "chat.postMessage"]
+
+    def test_stuck_hand_off_explains_itself_once_and_retries_each_minute(self):
+        q = msg(self.now - 30, text="How many registrants for tomorrow?")
+        s = FakeSlack([q])
+        cache = {}
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener_http(404), now=self.now)
+        notes = self.posts(s)
+        self.assertEqual(len(notes), 1)
+        self.assertEqual(notes[0]["thread_ts"], q["ts"])
+        self.assertIn("can't see that repo", notes[0]["text"])
+        self.assertIn("HTTP 404", notes[0]["text"])
+        self.assertIn("<@U04Q3M29UKE>", notes[0]["text"])
+        self.assertIn((q["ts"], "hourglass_flowing_sand"), s.reacted("reactions.add"))
+        self.assertIn((q["ts"], "inbox_tray"), s.reacted("reactions.remove"))     # still retried
+        # 10 s later: not retried yet (once a minute), and no second notice
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener_http(404), now=self.now + 10)
+        self.assertEqual(len(self.sent), 1)
+        # 70 s later: retried, still failing, still only one notice
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener_http(404), now=self.now + 70)
+        self.assertEqual(len(self.sent), 2)
+        self.assertEqual(len(self.posts(s)), 1)
+        # fixed: next retry goes through and the hourglass comes off
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now + 140)
+        self.assertEqual(len(self.sent), 3)
+        self.assertIn((q["ts"], "hourglass_flowing_sand"), s.reacted("reactions.remove"))
+
+    def test_stuck_notice_not_repeated_after_router_restart(self):
+        q = msg(self.now - 30)
+        note = msg(self.now - 20, user=BOT, text=f":warning: I saw this, but {rr.NOTICE_MARK} `x` robot", thread_ts=q["ts"])
+        s = FakeSlack([q], replies={q["ts"]: [q, note]})
+        rr.route_once(s, {CH: REPO}, "tok", cache={}, opener=self.opener_http(404), now=self.now)
+        self.assertEqual(self.posts(s), [])
+
     def test_thread_follow_up_is_sent_with_thread_ts(self):
         top = msg(self.now - 100, reactions=[{"name": "white_check_mark", "users": [BOT]}], reply_count=2,
                   latest_reply=f"{self.now - 10:.6f}")

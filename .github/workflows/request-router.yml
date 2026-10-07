@@ -11,8 +11,8 @@ name: Request router (Slack -> other sites' robots)
 # Needs: secrets SLACK_BOT_TOKEN (already set) + SERPDENTAL_DISPATCH_TOKEN (fine-grained token,
 # ascendpoint/serpdental-site, Contents: read and write); variables ROUTES (channel=owner/repo, comma-
 # separated) and ROUTER_START (unix time; ignore older messages). Optional ROUTER_ANY_THREAD (channels where a
-# reply under ANY bot's post counts, e.g. #meta-ads so replies under a Zapier-posted daily report get answered).
-# #meta-ads (C0C6JBR8LB1) routes to ascendpoint/ads-assistant, the ads Q&A robot.
+# reply under ANY bot's post counts, e.g. #ad-intelligence so replies under a Zapier-posted daily report get answered).
+# #ad-intelligence (C0C6JBR8LB1) routes to ascendpoint/ads-assistant, the ads Q&A robot.
 
 on:
   schedule:
@@ -38,6 +38,7 @@ jobs:
       ROUTES: ${{ vars.ROUTES }}
       ROUTER_START: ${{ vars.ROUTER_START }}
       ROUTER_ANY_THREAD: ${{ vars.ROUTER_ANY_THREAD }}
+      ROUTER_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Only one router at a time
