@@ -690,6 +690,32 @@ def thread_commits(thread_ts: str) -> list[str]:
     return [c for c in out if c not in reverted]
 
 
+def deploy_failed(sha: str) -> str | None:
+    """The site didn't show `sha` in time: if the deploy workflow refused it (failed/cancelled), return
+    that run's URL so the reply can say so instead of "taking longer than usual"."""
+    r = sh("gh", "run", "list", "--workflow", "deploy.yml", "--commit", sha, "--limit", "5",
+           "--json", "status,conclusion,url", check=False)
+    try:
+        runs = json.loads(r.stdout or "[]")
+    except Exception:
+        return None
+    for run in runs:
+        if run.get("status") == "completed" and run.get("conclusion") in ("failure", "cancelled", "timed_out",
+                                                                          "startup_failure"):
+            return run.get("url") or "the deploy run"
+    return None
+
+
+def not_live_note(sha: str) -> tuple[bool, str]:
+    """(deploy failed?, note for the reply) when the live check timed out."""
+    url = deploy_failed(sha)
+    if url:
+        owner = os.environ.get("WEBSITE_REQUESTS_OWNER", "")
+        return True, (f"\n⚠️ _Saved, but publishing failed, so the live site doesn't show it yet. "
+                      f"{f'<@{owner}> ' if owner else ''}has been flagged: {url}_")
+    return False, "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
+
+
 def links(pages: list[str], live: str, version: str = "") -> str:
     """Page links for a reply. `version` (a short commit id) is added as ?v=..., so each link is a URL no
     browser or CDN has cached before: the page opens fresh without clearing the cache."""
@@ -826,7 +852,9 @@ def approve_preview(req: dict, live: str) -> tuple[str, str]:
     live_ok = wait_live(sha, live)
     files = sh("git", "diff", "--name-only", f"{base}..HEAD").stdout.split()
     pages = sorted({u for u in map(url_for, files) if u})
-    note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
+    failed, note = (False, "") if live_ok else not_live_note(sha)
+    if failed:
+        return "warning", f"⚠️ Approved and saved, but NOT live yet.{note}"
     return "white_check_mark", (f"✅ Live: the previewed change is on the site now.\n{links(pages, live, sha[:7])}{note}\n"
                                 "_Reply *undo* here to roll it back._")
 
@@ -863,9 +891,11 @@ def handle(req: dict, slack: Slack, live: str) -> tuple[str, str]:
         sha = sh("git", "rev-parse", "HEAD").stdout.strip()
         sh("gh", "workflow", "run", "deploy.yml", "--ref", "main")
         live_ok = wait_live(sha, live)
+        failed, note = (False, "") if live_ok else not_live_note(sha)
+        if failed:
+            return "warning", f"⚠️ Undo saved, but NOT live yet.{note}"
         return ("leftwards_arrow_with_hook",
-                "↩️ Undone. The site is back to how it was before this thread's change."
-                + ("" if live_ok else " (Publishing is taking longer than usual; it should show within a few minutes.)"))
+                "↩️ Undone. The site is back to how it was before this thread's change." + note)
 
     preview = pending or wants_preview(req)
     if preview:
@@ -961,7 +991,10 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
 
     sha = commit_and_ship(req, summary)
     live_ok = wait_live(sha, live)
-    note = "" if live_ok else "\n_(Publishing is taking longer than usual; it should show within a few minutes.)_"
+    failed, note = (False, "") if live_ok else not_live_note(sha)
+    if failed:
+        return "warning", (f"⚠️ Saved but NOT live yet: {summary}{note}\n"
+                           f"_Reply *undo* here to drop it._\n_{footer}_")
     return "white_check_mark", (f"✅ Live: {summary}\n{links(pages, live, sha[:7])}{note}\n"
                                 f"_Reply *undo* here to roll it back, or reply with tweaks._\n_{footer}_")
 

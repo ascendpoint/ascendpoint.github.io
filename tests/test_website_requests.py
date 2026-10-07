@@ -720,5 +720,35 @@ print(json.dumps({{"result": "x", "permission_denials": [{{"tool_name": "Bash",
                                  stdout=subprocess.PIPE, stderr=subprocess.STDOUT, env=kw.get("env"))
 
 
+class DeployFailureTests(unittest.TestCase):
+    """When the site doesn't show a change in time, say whether the deploy actually failed."""
+
+    def run_gh(self, runs):
+        def fake_sh(*args, **kw):
+            assert args[:3] == ("gh", "run", "list"), args
+            return subprocess.CompletedProcess(args, 0, json.dumps(runs), "")
+        with mock.patch.object(wr, "sh", fake_sh), mock.patch.dict(os.environ, {"WEBSITE_REQUESTS_OWNER": "UKYLE"}):
+            return wr.not_live_note("abc1234")
+
+    def test_failed_deploy_is_reported_with_its_link(self):
+        failed, note = self.run_gh([{"status": "completed", "conclusion": "failure",
+                                     "url": "https://github.com/x/y/actions/runs/1"}])
+        self.assertTrue(failed)
+        self.assertIn("publishing failed", note)
+        self.assertIn("<@UKYLE>", note)
+        self.assertIn("actions/runs/1", note)
+
+    def test_slow_deploy_is_just_slow(self):
+        for runs in ([], [{"status": "in_progress", "conclusion": None, "url": "u"}],
+                     [{"status": "completed", "conclusion": "success", "url": "u"}]):
+            failed, note = self.run_gh(runs)
+            self.assertFalse(failed)
+            self.assertIn("taking longer", note)
+
+    def test_gh_hiccup_is_treated_as_slow(self):
+        with mock.patch.object(wr, "sh", lambda *a, **k: subprocess.CompletedProcess(a, 1, "not json", "")):
+            self.assertFalse(wr.not_live_note("abc")[0])
+
+
 if __name__ == "__main__":
     unittest.main()
