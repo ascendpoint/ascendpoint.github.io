@@ -142,6 +142,36 @@ class RouterTests(unittest.TestCase):
         rr.route_once(s, {CH: REPO}, "tok", cache={}, opener=self.opener_http(404), now=self.now)
         self.assertEqual(self.posts(s), [])
 
+    def test_hand_off_that_never_starts_is_reported_once(self):
+        q = msg(self.now - 30)
+        s = FakeSlack([q])
+        cache = {}
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now)
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now + 100)
+        self.assertEqual(self.posts(s), [])                     # still within 5 minutes
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now + 400)
+        notes = self.posts(s)
+        self.assertEqual(len(notes), 1)
+        self.assertIn("hasn't started", notes[0]["text"])
+        self.assertIn("SLACK_BOT_TOKEN", notes[0]["text"])
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now + 800)
+        self.assertEqual(len(self.posts(s)), 1)
+
+    def test_hand_off_that_started_is_quiet(self):
+        q = msg(self.now - 30)
+        s = FakeSlack([q])
+        orig = s.call
+
+        def call(method, **p):
+            if method == "reactions.get":
+                return {"ok": True, "message": {"reactions": [{"name": "eyes", "users": [BOT]}]}}
+            return orig(method, **p)
+        s.call = call
+        cache = {}
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now)
+        rr.route_once(s, {CH: REPO}, "tok", cache=cache, opener=self.opener(), now=self.now + 400)
+        self.assertEqual(self.posts(s), [])
+
     def test_thread_follow_up_is_sent_with_thread_ts(self):
         top = msg(self.now - 100, reactions=[{"name": "white_check_mark", "users": [BOT]}], reply_count=2,
                   latest_reply=f"{self.now - 10:.6f}")

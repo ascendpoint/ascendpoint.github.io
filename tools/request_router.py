@@ -42,6 +42,9 @@ import website_requests as wr  # noqa: E402  (Slack client + "is this a request?
 QUEUED = "inbox_tray"
 STUCK = "hourglass_flowing_sand"   # hand-off failing; still retried (not in DONE)
 RETRY_SECONDS = 60
+STALL_SECONDS = 300                # handed off, but the robot hasn't reacted 👀 within 5 min -> say so
+STARTED = {"eyes", "white_check_mark", "warning", "speech_balloon", "leftwards_arrow_with_hook", "mag"}
+STALL_MARK = "handed this to the"
 NOTICE_MARK = "couldn't hand this to the"
 DEFAULT_OWNER = "U04Q3M29UKE"      # Kyle Robins
 WHY = {401: "the router's GitHub token is invalid or expired",
@@ -146,6 +149,31 @@ def notify_stuck(slack, channel: str, it: dict, repo: str, code: int, bot_user: 
         print(f"notice failed: {type(e).__name__}", file=sys.stderr, flush=True)
 
 
+def check_stalled(slack, bot_user: str, cache: dict | None, now: float):
+    """A hand-off that went through but the robot never started (👀) within 5 minutes — usually the robot repo is
+    missing its secrets or its workflow is off. Say so once in the thread instead of leaving it silent."""
+    if cache is None:
+        return
+    sent = cache.setdefault("sent_at", {})
+    for ts, (channel, thread_ts, repo, t0) in list(sent.items()):
+        if now - t0 < STALL_SECONDS:
+            continue
+        sent.pop(ts)
+        cache.setdefault("stall_checked", set()).add(ts)
+        try:
+            r = slack.call("reactions.get", channel=channel, timestamp=ts)
+            names = {x.get("name") for x in (r.get("message") or {}).get("reactions", []) if bot_user in x.get("users", [])}
+            if names & STARTED:
+                continue
+            owner = os.environ.get("ROUTER_OWNER") or DEFAULT_OWNER
+            slack.call("chat.postMessage", channel=channel, thread_ts=thread_ts or ts, unfurl_links="false",
+                       text=f":warning: I {STALL_MARK} `{repo}` robot 5 minutes ago, but it hasn't started. That usually "
+                            f"means the robot is missing its GitHub secrets (SLACK_BOT_TOKEN, ANTHROPIC_API_KEY) or its "
+                            f"workflow is turned off — see github.com/{repo}/actions. <@{owner}>")
+        except Exception as e:
+            print(f"stall check failed: {type(e).__name__}", file=sys.stderr, flush=True)
+
+
 def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, cache: dict | None = None,
                opener=None, now: float | None = None) -> int:
     if cache is not None and "auth" in cache:
@@ -174,6 +202,9 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
             if dispatch(repo, token, {"channel": channel, "ts": it["ts"], "thread_ts": it["thread_ts"]}, opener, status):
                 print(f"queued {it['ts']} -> {repo}", flush=True)
                 sent += 1
+                if cache is not None:
+                    if it["ts"] not in cache.setdefault("stall_checked", set()):
+                        cache.setdefault("sent_at", {}).setdefault(it["ts"], (channel, it["thread_ts"], repo, t_now))
                 retry_at.pop(it["ts"], None)
                 if cache is not None and it["ts"] in cache.get("noticed", set()):
                     slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=STUCK)
@@ -181,6 +212,7 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
                 slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=QUEUED)
                 retry_at[it["ts"]] = t_now + RETRY_SECONDS
                 notify_stuck(slack, channel, it, repo, status.get("code", 0), bot_user, cache)
+    check_stalled(slack, bot_user, cache, now or time.time())
     return sent
 
 
