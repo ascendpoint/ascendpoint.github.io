@@ -233,3 +233,96 @@ class RouterTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SocialRouteTests(unittest.TestCase):
+    """#social-requests -> ascendpoint/ads-assistant#social-request, the social clock, and watched calendar threads."""
+
+    def setUp(self):
+        self.now = time.time()
+        self.sent = []
+
+    def opener(self, schedule=None, etag='"e1"', status=204):
+        def _open(req, timeout=30):
+            if "/contents/" in req.full_url:
+                self.sent.append(("GET", req.full_url, dict(req.headers)))
+                if schedule is None:
+                    import urllib.error
+                    raise urllib.error.HTTPError(req.full_url, 304, "not modified", {}, None)
+                r = FakeResp(200)
+                r.read = lambda: json.dumps(schedule).encode()
+                r.headers = {"ETag": etag}
+                return r
+            self.sent.append(("POST", req.full_url, json.loads(req.data.decode())))
+            return FakeResp(status)
+        return _open
+
+    def test_route_with_event_type(self):
+        routes = rr.parse_routes("C1=ascendpoint/ads-assistant#social-request,C2=ascendpoint/serpdental-site")
+        self.assertEqual(routes["C1"], "ascendpoint/ads-assistant#social-request")
+        self.assertEqual(rr.split_route(routes["C2"]), ("ascendpoint/serpdental-site", "website-request"))
+        s = FakeSlack([msg(self.now - 5, text="approve 1-8")])
+        rr.route_once(s, {"C1": routes["C1"]}, "tok", opener=self.opener())
+        _, url, body = self.sent[0]
+        self.assertEqual(url, "https://api.github.com/repos/ascendpoint/ads-assistant/dispatches")
+        self.assertEqual(body["event_type"], "social-request")
+        self.assertEqual(body["client_payload"]["channel"], "C1")
+
+    def test_clock_fires_due_items_once(self):
+        import os
+        os.environ["SOCIAL_SCHEDULE"] = "ascendpoint/ads-assistant:content/social/schedule.json"
+        try:
+            sched = {"due": [{"at": int(self.now) - 5, "key": "a@1", "why": "publish"},
+                             {"at": int(self.now) + 600, "key": "b@2", "why": "confirm"}],
+                     "threads": [{"channel": "C1", "ts": "1700000000.000100"}]}
+            cache = {}
+            self.assertEqual(rr.social_clock("tok", cache, self.opener(sched), now=self.now), 1)
+            get = self.sent[0]
+            self.assertIn("/repos/ascendpoint/ads-assistant/contents/content/social/schedule.json?ref=main", get[1])
+            post = self.sent[1]
+            self.assertEqual(post[2]["event_type"], "social-tick")
+            self.assertEqual(post[2]["client_payload"]["keys"], ["a@1"])
+            self.assertEqual(cache["watch_threads"], sched["threads"])
+            # within the minute: nothing; a minute later with 304: same schedule, a@1 not re-sent, b not due yet
+            self.assertEqual(rr.social_clock("tok", cache, self.opener(None), now=self.now + 10), 0)
+            self.assertEqual(rr.social_clock("tok", cache, self.opener(None), now=self.now + 70), 0)
+            self.assertEqual(self.sent[-1][2].get("If-None-match") or self.sent[-1][2].get("If-none-match"), '"e1"')
+            # ten minutes later b is due
+            self.assertEqual(rr.social_clock("tok", cache, self.opener(None), now=self.now + 700), 1)
+            self.assertEqual(self.sent[-1][2]["client_payload"]["keys"], ["b@2"])
+        finally:
+            os.environ.pop("SOCIAL_SCHEDULE", None)
+
+    def test_clock_off_without_variable(self):
+        self.assertEqual(rr.social_clock("tok", {}, self.opener({"due": []}), now=self.now), 0)
+        self.assertEqual(self.sent, [])
+
+    def test_failed_tick_dispatch_is_retried(self):
+        import os
+        os.environ["SOCIAL_SCHEDULE"] = "o/r:s.json"
+        try:
+            cache = {}
+            sched = {"due": [{"at": int(self.now) - 5, "key": "a@1"}]}
+            def bad(req, timeout=30):
+                if "/contents/" in req.full_url:
+                    return self.opener(sched)(req, timeout)
+                raise OSError("down")
+            self.assertEqual(rr.social_clock("tok", cache, bad, now=self.now), 0)
+            self.assertEqual(rr.social_clock("tok", cache, self.opener(None), now=self.now + 61), 1)
+        finally:
+            os.environ.pop("SOCIAL_SCHEDULE", None)
+
+    def test_watched_calendar_thread_reply_older_than_two_days(self):
+        root = f"{self.now - 10 * 86400:.6f}"
+        reply = msg(self.now - 20, text="approve 3", thread_ts=root)
+        s = FakeSlack(history=[], replies={root: [msg(float(root), user=BOT, text="calendar"), reply]})
+        cache = {"auth": {"user_id": BOT, "bot_id": "BBOT"}, "watch_threads": [{"channel": "C1", "ts": root}]}
+        n = rr.route_once(s, {"C1": "ascendpoint/ads-assistant#social-request"}, "tok", cache=cache,
+                          opener=self.opener())
+        self.assertEqual(n, 1)
+        self.assertEqual(self.sent[0][2]["client_payload"], {"channel": "C1", "ts": reply["ts"], "thread_ts": root})
+        # handled (bot reacted) -> not sent again
+        reply["reactions"] = [{"name": "white_check_mark", "users": [BOT]}]
+        cache["watch_polled"] = {}
+        self.assertEqual(rr.route_once(s, {"C1": "ascendpoint/ads-assistant#social-request"}, "tok", cache=cache,
+                                       opener=self.opener()), 0)

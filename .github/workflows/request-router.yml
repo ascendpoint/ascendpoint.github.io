@@ -13,6 +13,9 @@ name: Request router (Slack -> other sites' robots)
 # separated) and ROUTER_START (unix time; ignore older messages). Optional ROUTER_ANY_THREAD (channels where a
 # reply under ANY bot's post counts, e.g. #ad-intelligence so replies under a Zapier-posted daily report get answered).
 # #ad-intelligence (C0C6JBR8LB1) routes to ascendpoint/ads-assistant, the ads Q&A robot.
+# #social-requests routes to ascendpoint/ads-assistant#social-request (the social calendar robot), and variable
+# SOCIAL_SCHEDULE (ascendpoint/ads-assistant:content/social/schedule.json) turns on the social clock: the router
+# sends "social-tick" the minute a post is due to publish or needs confirming.
 
 on:
   schedule:
@@ -39,6 +42,7 @@ jobs:
       ROUTER_START: ${{ vars.ROUTER_START }}
       ROUTER_ANY_THREAD: ${{ vars.ROUTER_ANY_THREAD }}
       ROUTER_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
+      SOCIAL_SCHEDULE: ${{ vars.SOCIAL_SCHEDULE }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Only one router at a time

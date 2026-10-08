@@ -25,7 +25,14 @@ replies once in the thread with ⚠️ and the reason, @mentions the owner, and 
 message is answered automatically as soon as the problem is fixed.
 
 Routes (Oct 2026): #serpdental-website-requests -> ascendpoint/serpdental-site (website robot),
-#ad-intelligence (was #meta-ads) -> ascendpoint/ads-assistant (questions + approved actions: Meta / Zoom / Typeform / GHL).
+#ad-intelligence (was #meta-ads) -> ascendpoint/ads-assistant (questions + approved actions: Meta / Zoom / Typeform / GHL),
+#social-requests -> ascendpoint/ads-assistant#social-request (the social calendar robot).
+A route may name its event type after '#' (default "website-request"), so one repo can host several robots.
+
+Social clock (SOCIAL_SCHEDULE="owner/repo:path/to/schedule.json"): once a minute the router reads the social robot's
+schedule (when a post is due to publish, needs confirming or a retry) and sends that repo a "social-tick" dispatch
+the moment something is due, so posts go out on time without a private-repo cron burning Actions minutes. The same
+file lists the monthly calendar threads, which the router keeps watching for replies past its usual 2-day window.
 """
 from __future__ import annotations
 
@@ -60,9 +67,15 @@ def parse_routes(raw: str | None) -> dict[str, str]:
     for part in (raw or "").split(","):
         if "=" in part:
             ch, repo = (x.strip() for x in part.split("=", 1))
-            if ch and repo.count("/") == 1:
+            if ch and split_route(repo)[0].count("/") == 1:
                 routes[ch] = repo
     return routes
+
+
+def split_route(route: str) -> tuple[str, str]:
+    """'owner/repo#social-request' -> ('owner/repo', 'social-request'); no '#' -> 'website-request'."""
+    repo, _, event = route.partition("#")
+    return repo.strip(), (event.strip() or "website-request")
 
 
 def done_by_bot(msg: dict, bot_user: str) -> bool:
@@ -102,15 +115,94 @@ def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float
                     found = True
             if not found:
                 quiet[m["ts"]] = marker
+    seen_roots = {m["ts"] for m in hist.get("messages", [])}
+    out += watched_replies(slack, channel, bot_user, bot_id, oldest, now, cache, skip=seen_roots)
     return sorted(out, key=lambda x: float(x["ts"]))
+
+
+WATCH_POLL = 20     # seconds between polls of one watched (older) thread
+
+
+def watched_replies(slack, channel: str, bot_user: str, bot_id: str | None, oldest: float, now: float,
+                    cache: dict | None, skip: set | frozenset = frozenset()) -> list[dict]:
+    """Replies in long-lived threads the social robot asked us to watch (its monthly calendar threads), whose root is
+    older than the 2-day history window. Only replies newer than `oldest` count, like everywhere else."""
+    if cache is None:
+        return []
+    roots = [t["ts"] for t in cache.get("watch_threads", []) if t.get("channel") == channel and t.get("ts") not in skip]
+    last = cache.setdefault("watch_polled", {})
+    out = []
+    for root in roots:
+        if now - last.get(root, 0) < WATCH_POLL:
+            continue
+        last[root] = now
+        try:
+            thread = slack.call("conversations.replies", channel=channel, ts=root, oldest=f"{oldest:.6f}",
+                                limit=200).get("messages", [])
+        except Exception as e:
+            print(f"watch {root} failed: {type(e).__name__}", file=sys.stderr, flush=True)
+            continue
+        for r in thread:
+            if r.get("ts") == root or float(r["ts"]) < oldest:
+                continue
+            if wr.is_request(r, bot_user, bot_id) and not done_by_bot(r, bot_user):
+                out.append({"ts": r["ts"], "thread_ts": root})
+    return out
+
+
+# ----------------------------------------------------------------------------- social clock
+CLOCK_SECONDS = 60
+
+
+def social_clock(token: str, cache: dict, opener=None, now: float | None = None) -> int:
+    """Read the social robot's schedule.json (ETag-cached) and send one "social-tick" when anything is due.
+    Returns the number of due items dispatched."""
+    spec = (os.environ.get("SOCIAL_SCHEDULE") or "").strip()
+    if not spec or ":" not in spec:
+        return 0
+    now = now or time.time()
+    if now - cache.get("clock_at", 0) < CLOCK_SECONDS:
+        return 0
+    cache["clock_at"] = now
+    repo, path = spec.split(":", 1)
+    opener = opener or urllib.request.urlopen
+    hdrs = {"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
+            "X-GitHub-Api-Version": "2022-11-28"}
+    if cache.get("clock_etag"):
+        hdrs["If-None-Match"] = cache["clock_etag"]
+    req = urllib.request.Request(f"https://api.github.com/repos/{repo}/contents/{path}?ref=main", headers=hdrs)
+    try:
+        with opener(req, timeout=30) as r:
+            body = r.read().decode()
+            et = (getattr(r, "headers", None) or {}).get("ETag") if hasattr(getattr(r, "headers", None), "get") else None
+        sched = json.loads(body)
+        cache["clock_schedule"] = sched
+        if et:
+            cache["clock_etag"] = et
+    except Exception as e:
+        if int(getattr(e, "code", 0) or 0) != 304:
+            print(f"social clock: couldn't read the schedule ({type(e).__name__} {getattr(e, 'code', '')})",
+                  file=sys.stderr, flush=True)
+    sched = cache.get("clock_schedule") or {}
+    cache["watch_threads"] = sched.get("threads") or []
+    fired = cache.setdefault("clock_fired", set())
+    due = [d["key"] for d in sched.get("due") or [] if d.get("at", 0) <= now and d.get("key") not in fired]
+    if not due:
+        return 0
+    if dispatch(f"{repo}#social-tick", token, {"keys": due[:50]}, opener):
+        fired.update(due)
+        print(f"social clock: {len(due)} due -> tick", flush=True)
+        return len(due)
+    return 0
 
 
 def dispatch(repo: str, token: str, payload: dict, opener=None, status: dict | None = None) -> bool:
     """POST a repository_dispatch. On failure, status["code"] = the HTTP code (0 = network) for the notice."""
     opener = opener or urllib.request.urlopen
+    repo, event = split_route(repo)
     req = urllib.request.Request(
         f"https://api.github.com/repos/{repo}/dispatches",
-        data=json.dumps({"event_type": "website-request", "client_payload": payload}).encode(),
+        data=json.dumps({"event_type": event, "client_payload": payload}).encode(),
         headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github+json",
                  "X-GitHub-Api-Version": "2022-11-28", "Content-Type": "application/json"},
         method="POST")
@@ -143,7 +235,7 @@ def notify_stuck(slack, channel: str, it: dict, repo: str, code: int, bot_user: 
     try:
         slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=STUCK)
         slack.call("chat.postMessage", channel=channel, thread_ts=root, unfurl_links="false",
-                   text=f":warning: I saw this, but {NOTICE_MARK} `{repo}` robot: {why} (HTTP {code or 'network'}). "
+                   text=f":warning: I saw this, but {NOTICE_MARK} `{split_route(repo)[0]}` robot: {why} (HTTP {code or 'network'}). "
                         f"<@{owner}> can fix it; I'll keep retrying every minute and answer here automatically once it works.")
     except Exception as e:
         print(f"notice failed: {type(e).__name__}", file=sys.stderr, flush=True)
@@ -167,9 +259,9 @@ def check_stalled(slack, bot_user: str, cache: dict | None, now: float):
                 continue
             owner = os.environ.get("ROUTER_OWNER") or DEFAULT_OWNER
             slack.call("chat.postMessage", channel=channel, thread_ts=thread_ts or ts, unfurl_links="false",
-                       text=f":warning: I {STALL_MARK} `{repo}` robot 5 minutes ago, but it hasn't started. That usually "
+                       text=f":warning: I {STALL_MARK} `{split_route(repo)[0]}` robot 5 minutes ago, but it hasn't started. That usually "
                             f"means the robot is missing its GitHub secrets (SLACK_BOT_TOKEN, ANTHROPIC_API_KEY) or its "
-                            f"workflow is turned off — see github.com/{repo}/actions. <@{owner}>")
+                            f"workflow is turned off — see github.com/{split_route(repo)[0]}/actions. <@{owner}>")
         except Exception as e:
             print(f"stall check failed: {type(e).__name__}", file=sys.stderr, flush=True)
 
@@ -235,6 +327,10 @@ def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0
     cache: dict = {}
     total = 0
     while clock() < end:
+        try:
+            social_clock(token, cache)
+        except Exception as e:
+            print(f"social clock error: {type(e).__name__}", file=sys.stderr, flush=True)
         try:
             total += route_once(slack, routes, token, start=start, cache=cache)
         except Exception as e:
