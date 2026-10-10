@@ -134,7 +134,8 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 /* hero */
 .hero{position:relative;overflow:hidden;background:var(--prussian);color:var(--white)}
 .hero::before{content:"";position:absolute;inset:0 0 0 40%;background:url("/img/brand-pattern.svg") right top/84px auto repeat;-webkit-mask-image:linear-gradient(90deg,transparent,#000 45%);mask-image:linear-gradient(90deg,transparent,#000 45%)}
-.hero.photo{background:linear-gradient(90deg,rgba(0,24,40,.86) 0%,rgba(0,24,40,.68) 50%,rgba(0,24,40,.5) 100%),url("/img/hero-dentist-patient.webp") center/cover no-repeat,var(--prussian)}
+.hero.photo{background:linear-gradient(90deg,rgba(0,24,40,.6) 0%,rgba(0,24,40,.4) 50%,rgba(0,24,40,.22) 100%),url("/img/hero-dentist-patient.webp") center/cover no-repeat,var(--prussian)}
+.hero.photo h1,.hero.photo p{text-shadow:0 1px 14px rgba(0,16,28,.55)}
 .hero.photo::before{display:none}
 .hero>.wrap{position:relative;padding-block:clamp(72px,10vw,130px)}
 .hero.page>.wrap{padding-block:clamp(64px,8vw,110px)}
