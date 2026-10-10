@@ -197,7 +197,7 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .foot-col a{color:var(--white)}
 .foot-col a:hover{color:var(--sky)}
 .foot-col h4,.foot-col .foot-h{font:700 12px/1 var(--display);letter-spacing:.18em;color:var(--sky);text-transform:uppercase;margin-bottom:6px}
-.foot-brand img{height:49px;width:auto;align-self:flex-start}
+.foot-brand img{height:68px;width:auto;max-width:100%;object-fit:contain;object-position:left center;align-self:flex-start}
 .foot-brand p{font-size:16px;max-width:360px}
 .foot-bottom{border-top:1px solid #1A4A6A;padding-block:24px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:14px;color:var(--gray)}
 
