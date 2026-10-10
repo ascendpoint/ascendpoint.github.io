@@ -141,7 +141,8 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 @keyframes hero-fade{0%,38%{opacity:0}50%,88%{opacity:1}100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.hero.photo::after{animation:none}}
 .hero.about-photo::before{inset:0;-webkit-mask-image:none;mask-image:none;background:linear-gradient(90deg,rgba(0,30,56,.9) 0%,rgba(0,30,56,.82) 50%,rgba(0,30,56,.74) 100%),url("/img/hero-about-team.webp") center/cover no-repeat}
-.hero.about-photo h1,.hero.photo h1,.hero.photo p{text-shadow:0 1px 14px rgba(0,16,28,.55)}
+.hero.brands-photo::before{inset:0;-webkit-mask-image:none;mask-image:none;transform:scaleX(-1);background:linear-gradient(270deg,rgba(0,30,56,.9) 0%,rgba(0,30,56,.82) 50%,rgba(0,30,56,.74) 100%),url("/img/hero-brands-team.webp") center/cover no-repeat}
+.hero.about-photo h1,.hero.brands-photo h1,.hero.photo h1,.hero.photo p{text-shadow:0 1px 14px rgba(0,16,28,.55)}
 .hero>.wrap{position:relative;z-index:1;padding-block:clamp(72px,10vw,130px)}
 .hero.page>.wrap{padding-block:clamp(64px,8vw,110px)}
 .hero-grid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:64px;align-items:center}
