@@ -137,7 +137,7 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .hero.photo{background:var(--prussian)}
 .hero.photo::before,.hero.photo::after{content:"";display:block;position:absolute;inset:0;-webkit-mask-image:none;mask-image:none}
 .hero.photo::before{background:linear-gradient(90deg,rgba(0,30,56,.9) 0%,rgba(0,30,56,.82) 50%,rgba(0,30,56,.74) 100%),url("/img/hero-dentist-patient.webp") center/cover no-repeat}
-.hero.photo::after{background:linear-gradient(90deg,rgba(0,30,56,.9) 0%,rgba(0,30,56,.82) 50%,rgba(0,30,56,.74) 100%),url("/img/hero-doctor-patient.webp") center/cover no-repeat;opacity:0;animation:hero-fade 16s ease-in-out infinite}
+.hero.photo::after{background:linear-gradient(90deg,rgba(0,30,56,.9) 0%,rgba(0,30,56,.82) 50%,rgba(0,30,56,.74) 100%),url("/img/hero-doctor-patient.webp") center/cover no-repeat;opacity:0;animation:hero-fade 10s ease-in-out infinite}
 @keyframes hero-fade{0%,38%{opacity:0}50%,88%{opacity:1}100%{opacity:0}}
 @media (prefers-reduced-motion:reduce){.hero.photo::after{animation:none}}
 .hero.photo h1,.hero.photo p{text-shadow:0 1px 14px rgba(0,16,28,.55)}
