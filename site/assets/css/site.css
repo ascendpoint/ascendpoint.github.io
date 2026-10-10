@@ -85,7 +85,7 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .site-header{position:sticky;top:env(safe-area-inset-top,0px);z-index:50;background:var(--prussian);border-bottom:1px solid var(--navy2)}
 .site-header .wrap{height:84px;display:flex;align-items:center;justify-content:space-between;gap:24px}
 .logo{display:flex;flex-shrink:0}
-.logo img{height:40px;width:auto;display:block}
+.logo img{height:52px;width:auto;display:block}
 .nav{display:flex;align-items:center;gap:26px;font:600 14px/1 var(--display);letter-spacing:.04em}
 .nav>a,.dd-btn{color:var(--white);padding-block:10px}
 .nav>a:hover,.dd-btn:hover{color:var(--sky)}
@@ -107,7 +107,7 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .menu-toggle{display:none;background:none;border:1px solid var(--navyline);color:var(--white);border-radius:10px;width:48px;height:48px;align-items:center;justify-content:center;cursor:pointer}
 @media (max-width:1240px) and (min-width:821px){
  .site-header .wrap{gap:16px}
- .logo img{height:34px}
+ .logo img{height:44px}
  .nav{gap:18px;font-size:13px;letter-spacing:.02em}
  .nav .btn{min-height:42px;padding:0 16px;font-size:13px}
 }
@@ -197,7 +197,7 @@ a.card-dark:hover{color:var(--white);border-color:var(--sky)}
 .foot-col a{color:var(--white)}
 .foot-col a:hover{color:var(--sky)}
 .foot-col h4,.foot-col .foot-h{font:700 12px/1 var(--display);letter-spacing:.18em;color:var(--sky);text-transform:uppercase;margin-bottom:6px}
-.foot-brand img{height:38px;width:auto;align-self:flex-start}
+.foot-brand img{height:49px;width:auto;align-self:flex-start}
 .foot-brand p{font-size:16px;max-width:360px}
 .foot-bottom{border-top:1px solid #1A4A6A;padding-block:24px;display:flex;justify-content:space-between;flex-wrap:wrap;gap:12px;font-size:14px;color:var(--gray)}
 
