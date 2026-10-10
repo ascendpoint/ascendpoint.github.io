@@ -1,0 +1,148 @@
+# Redirects for ascendpoint.agency on Kinsta (Sevalla static hosting).
+# Format: /from  /to  status. First match wins, so specific rules go above wildcards.
+# build.py adds the with/without-trailing-slash twin of every exact rule automatically,
+# and tools/test_redirects.py proves every URL the old WordPress site ever published
+# (tools/legacy_urls.txt) lands on a real page in one hop.
+#
+# Pages that kept their WordPress URL need no rule here (/, /about/, /contact/,
+# /our-results/, /capabilities/*, /blog/, the four blog posts, and the three
+# strategy-session funnel pages).
+
+# --- www -> apex (only takes effect once www.ascendpoint.agency is attached) ---
+https://www.ascendpoint.agency/  https://ascendpoint.agency/  301!
+https://www.ascendpoint.agency/*  https://ascendpoint.agency/:splat  301!
+
+# --- Old WordPress pages that no longer exist ---
+/home/  /  301
+/home  /  301
+/other-industries/  /capabilities/  301
+/other-industries  /capabilities/  301
+/legal-marketing/  /capabilities/  301
+/legal-marketing  /capabilities/  301
+/legal-marketing/*  /capabilities/  301
+/solutions/healthcare-seo/  /capabilities/healthcare-seo-ai-ranking/  301
+/solutions/healthcare-seo  /capabilities/healthcare-seo-ai-ranking/  301
+/solutions/  /capabilities/  301
+/solutions  /capabilities/  301
+/solutions/*  /capabilities/:splat  301
+/event-1/  /capabilities/healthcare-webinars-events/  301
+/event-1  /capabilities/healthcare-webinars-events/  301
+/event-2/  /capabilities/healthcare-webinars-events/  301
+/event-2  /capabilities/healthcare-webinars-events/  301
+/event-3/  /capabilities/healthcare-webinars-events/  301
+/event-3  /capabilities/healthcare-webinars-events/  301
+/category/news/  /news/  301
+/category/news  /news/  301
+/category/news/*  /news/  301
+/category/events/  /capabilities/healthcare-webinars-events/  301
+/category/events  /capabilities/healthcare-webinars-events/  301
+/category/events/*  /capabilities/healthcare-webinars-events/  301
+/category/  /blog/  301
+/category  /blog/  301
+/category/*  /blog/  301
+/blog/page/  /blog/  301
+/blog/page  /blog/  301
+/blog/page/*  /blog/  301
+/page/  /blog/  301
+/page  /blog/  301
+/page/*  /blog/  301
+/author/  /about/  301
+/author  /about/  301
+/author/*  /about/  301
+/tag/  /blog/  301
+/tag  /blog/  301
+/tag/*  /blog/  301
+/project/  /  301
+/project  /  301
+/project/*  /  301
+
+# --- WordPress system URLs ---
+/feed/  /feed.xml  301
+/feed  /feed.xml  301
+/feed/*  /feed.xml  301
+/comments/feed/  /feed.xml  301
+/comments/feed  /feed.xml  301
+/comments/feed/*  /feed.xml  301
+/sitemap_index.xml  /sitemap.xml  301
+/sitemaps.xml  /sitemap.xml  301
+/page-sitemap.xml  /sitemap.xml  301
+/page-sitemap1.xml  /sitemap.xml  301
+/post-sitemap.xml  /sitemap.xml  301
+/post-sitemap1.xml  /sitemap.xml  301
+/category-sitemap.xml  /sitemap.xml  301
+/category-sitemap1.xml  /sitemap.xml  301
+/wp-sitemap.xml  /sitemap.xml  301
+/wp-admin/  /  302
+/wp-admin  /  302
+/wp-admin/*  /  302
+/wp-login.php  /  302
+
+# --- Short / guessable URLs people type or link to ---
+/results/  /our-results/  301
+/results  /our-results/  301
+/insights/  /blog/  301
+/insights  /blog/  301
+/about-us/  /about/  301
+/about-us  /about/  301
+/contact-us/  /contact/  301
+/contact-us  /contact/  301
+/services/  /capabilities/  301
+/services  /capabilities/  301
+/privacy/  /privacy-policy/  301
+/privacy  /privacy-policy/  301
+/book/  /schedule-a-call/  301
+/book  /schedule-a-call/  301
+/team/  /about/  301
+/team  /about/  301
+
+# --- Flat URLs used on the GitHub Pages staging preview (Sep 2026) ---
+/seo-ai-ranking  /capabilities/healthcare-seo-ai-ranking/  301
+/seo-ai-ranking/  /capabilities/healthcare-seo-ai-ranking/  301
+/ppc-ads  /capabilities/healthcare-ppc-ads/  301
+/ppc-ads/  /capabilities/healthcare-ppc-ads/  301
+/social-media  /capabilities/healthcare-social-media-ads/  301
+/social-media/  /capabilities/healthcare-social-media-ads/  301
+/website-design  /capabilities/healthcare-website-design/  301
+/website-design/  /capabilities/healthcare-website-design/  301
+/branding  /capabilities/healthcare-branding/  301
+/branding/  /capabilities/healthcare-branding/  301
+/video-photography  /capabilities/healthcare-video-and-photography/  301
+/video-photography/  /capabilities/healthcare-video-and-photography/  301
+/strategy  /capabilities/healthcare-strategy/  301
+/strategy/  /capabilities/healthcare-strategy/  301
+/lead-tracking-analytics  /capabilities/healthcare-lead-tracking-analytics/  301
+/lead-tracking-analytics/  /capabilities/healthcare-lead-tracking-analytics/  301
+/email-sms-marketing  /capabilities/healthcare-email-sms-marketing/  301
+/email-sms-marketing/  /capabilities/healthcare-email-sms-marketing/  301
+/reputation-management  /capabilities/healthcare-reputation-management/  301
+/reputation-management/  /capabilities/healthcare-reputation-management/  301
+/webinars-events  /capabilities/healthcare-webinars-events/  301
+/webinars-events/  /capabilities/healthcare-webinars-events/  301
+/podcasting  /capabilities/healthcare-podcasting/  301
+/podcasting/  /capabilities/healthcare-podcasting/  301
+/book-publishing  /capabilities/healthcare-book-publishing/  301
+/book-publishing/  /capabilities/healthcare-book-publishing/  301
+/ai-conversion-tools  /capabilities/healthcare-ai-conversion-tools/  301
+/ai-conversion-tools/  /capabilities/healthcare-ai-conversion-tools/  301
+/ascendvu-ai-visibility  /capabilities/ascendvu-ai-visibility/  301
+/ascendvu-ai-visibility/  /capabilities/ascendvu-ai-visibility/  301
+/marketing-for-dentists  /marketing-for-dentists-building-a-thriving-practice-in-the-digital-age/  301
+/marketing-for-dentists/  /marketing-for-dentists-building-a-thriving-practice-in-the-digital-age/  301
+/how-to-show-up-in-ai  /how-to-show-up-in-ai-your-business-guide-to-ai-powered-search-visibility/  301
+/how-to-show-up-in-ai/  /how-to-show-up-in-ai-your-business-guide-to-ai-powered-search-visibility/  301
+/what-is-local-seo  /what-is-local-seo-your-complete-guide-to-dominating-your-local-market/  301
+/what-is-local-seo/  /what-is-local-seo-your-complete-guide-to-dominating-your-local-market/  301
+/news-fletcher-road-capital-launch  /news/fletcher-road-capital-launch/  301
+/news-fletcher-road-capital-launch/  /news/fletcher-road-capital-launch/  301
+/news-fletcher-road-capital-acquires-serp-agency  /news/fletcher-road-capital-acquires-serp-agency/  301
+/news-fletcher-road-capital-acquires-serp-agency/  /news/fletcher-road-capital-acquires-serp-agency/  301
+/news-serp-dental-dental-focus  /news/serp-dental-dental-focus/  301
+/news-serp-dental-dental-focus/  /news/serp-dental-dental-focus/  301
+/news-serp-agency-becomes-ascendpoint  /news/serp-agency-becomes-ascendpoint/  301
+/news-serp-agency-becomes-ascendpoint/  /news/serp-agency-becomes-ascendpoint/  301
+/news-serp-dental-acquires-sparklyfe  /news/serp-dental-acquires-sparklyfe/  301
+/news-serp-dental-acquires-sparklyfe/  /news/serp-dental-acquires-sparklyfe/  301
+/news-ascendvu-ai-product-suite-launch  /news/ascendvu-ai-product-suite-launch/  301
+/news-ascendvu-ai-product-suite-launch/  /news/ascendvu-ai-product-suite-launch/  301
+/news-ascendpoint-acquires-medical-marketing-whiz  /news/ascendpoint-acquires-medical-marketing-whiz/  301
+/news-ascendpoint-acquires-medical-marketing-whiz/  /news/ascendpoint-acquires-medical-marketing-whiz/  301
