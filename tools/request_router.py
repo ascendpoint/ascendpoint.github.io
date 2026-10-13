@@ -17,7 +17,8 @@ Nothing is logged except timestamps: this repo's Actions logs are public.
 Environment: SLACK_BOT_TOKEN, ROUTES (comma-separated channel=owner/repo), DISPATCH_TOKEN (fine-grained
 token with Contents: read and write on the target repos), optional ROUTER_START (unix ts; ignore older
 messages), ROUTER_ANY_THREAD (channels where replies under any bot's post count, e.g. #ad-intelligence),
-ROUTER_OWNER (Slack user @mentioned when a hand-off keeps failing; default Kyle), POLL_SECONDS (default 10),
+ROUTER_WAKE_CHANNELS (channels where only a message that calls the bot counts: @mention, "AscendPoint AI/agent",
+"the agent"; replies in threads the bot is in always count), ROUTER_OWNER (Slack user @mentioned when a hand-off keeps failing; default Kyle), POLL_SECONDS (default 10),
 LISTEN_MINUTES (default 340).
 
 If a hand-off fails (e.g. the dispatch token can't reach the target repo), the router never goes quiet: it
@@ -38,6 +39,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import sys
 import time
 import urllib.request
@@ -88,8 +90,24 @@ def any_thread_channels() -> set[str]:
     return {c.strip() for c in (os.environ.get("ROUTER_ANY_THREAD") or "").split(",") if c.strip()}
 
 
+WAKE_RE = re.compile(r"ascend\s*point\s+(ai|mcp|agent)\b|\b(the|our)\s+(audit\s+)?agent\b", re.I)
+
+
+def wake_channels() -> set[str]:
+    """Channels (ROUTER_WAKE_CHANNELS, comma-separated) where people talk to each other and the bot only answers when
+    called: an @mention of the bot, or "AscendPoint AI/MCP/agent", or "the agent". Replies in a thread the bot is in
+    always count (follow-ups)."""
+    return {c.strip() for c in (os.environ.get("ROUTER_WAKE_CHANNELS") or "").split(",") if c.strip()}
+
+
+def wakes(msg: dict, bot_user: str) -> bool:
+    text = msg.get("text", "") or ""
+    return f"<@{bot_user}" in text or bool(WAKE_RE.search(text))
+
+
 def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float = 0.0,
-            now: float | None = None, cache: dict | None = None, any_thread: bool = False) -> list[dict]:
+            now: float | None = None, cache: dict | None = None, any_thread: bool = False,
+            wake_only: bool = False) -> list[dict]:
     """New requests in `channel`, oldest first: [{"ts", "thread_ts"}]."""
     now = now or time.time()
     oldest = max(start, now - MAX_AGE)
@@ -97,7 +115,8 @@ def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float
     hist = slack.call("conversations.history", channel=channel, oldest=f"{oldest:.6f}", limit=200)
     out = []
     for m in hist.get("messages", []):
-        if wr.is_request(m, bot_user, bot_id) and not done_by_bot(m, bot_user):
+        if wr.is_request(m, bot_user, bot_id) and not done_by_bot(m, bot_user) \
+                and (not wake_only or wakes(m, bot_user)):
             out.append({"ts": m["ts"], "thread_ts": None})
         if m.get("reply_count"):
             marker = m.get("latest_reply") or str(m.get("reply_count"))
@@ -106,9 +125,13 @@ def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float
             thread = slack.call("conversations.replies", channel=channel, ts=m["ts"], limit=200).get("messages", [])
             bot_in_thread = any(x.get("user") == bot_user for x in thread) or \
                 (any_thread and any(x.get("bot_id") for x in thread))
+            # in a wake-only channel a reply can also call the bot by name in a thread it hasn't joined yet
+            # (a teammate's thread: "@AscendPoint AI build this deck")
             found = False
             for r in thread[1:]:
-                if float(r["ts"]) < oldest or not bot_in_thread:
+                if float(r["ts"]) < oldest:
+                    continue
+                if not (bot_in_thread or (wake_only and wakes(r, bot_user))):
                     continue
                 if wr.is_request(r, bot_user, bot_id) and not done_by_bot(r, bot_user):
                     out.append({"ts": r["ts"], "thread_ts": m["ts"]})
@@ -277,10 +300,11 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
     bot_user, bot_id = auth["user_id"], auth.get("bot_id")
     sent = 0
     anyt = any_thread_channels()
+    wake = wake_channels()
     for channel, repo in routes.items():
         try:
             items = pending(slack, channel, bot_user, bot_id, start=start, now=now, cache=cache,
-                            any_thread=channel in anyt)
+                            any_thread=channel in anyt, wake_only=channel in wake)
         except Exception as e:
             print(f"poll {channel} failed: {type(e).__name__}", file=sys.stderr, flush=True)
             continue

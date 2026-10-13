@@ -41,6 +41,7 @@ jobs:
       ROUTES: ${{ vars.ROUTES }}
       ROUTER_START: ${{ vars.ROUTER_START }}
       ROUTER_ANY_THREAD: ${{ vars.ROUTER_ANY_THREAD }}
+      ROUTER_WAKE_CHANNELS: ${{ vars.ROUTER_WAKE_CHANNELS }}
       ROUTER_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
       SOCIAL_SCHEDULE: ${{ vars.SOCIAL_SCHEDULE }}
       GH_TOKEN: ${{ github.token }}

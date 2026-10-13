@@ -204,6 +204,44 @@ class RouterTests(unittest.TestCase):
             rr.route_once(s2, {"CADS": "ascendpoint/ads-assistant"}, "tok", opener=self.opener())
         self.assertEqual([b["client_payload"]["ts"] for _, b, _ in self.sent], [])
 
+    def test_wake_channel_only_answers_when_called(self):
+        import os
+        from unittest import mock
+        chat = msg(self.now - 90, text="Patrick, are you on the 2pm?")
+        named = msg(self.now - 80, text="how do i activate the agent?")
+        mention = msg(self.now - 70, text=f"<@{BOT}> build the deck for Dr. Hayat")
+        brand = msg(self.now - 60, text="AscendPoint AI what is on Adam's calendar")
+        agency = msg(self.now - 50, text="the ascendpoint agency logo")
+        s = FakeSlack([chat, named, mention, brand, agency])
+        with mock.patch.dict(os.environ, {"ROUTER_WAKE_CHANNELS": CH}):
+            rr.route_once(s, {CH: REPO}, "tok", opener=self.opener())
+        self.assertEqual(sorted(b["client_payload"]["ts"] for _, b, _ in self.sent),
+                         sorted([named["ts"], mention["ts"], brand["ts"]]))
+        # not a wake channel: everything counts, as before
+        self.sent.clear()
+        s2 = FakeSlack([chat, named])
+        with mock.patch.dict(os.environ, {"ROUTER_WAKE_CHANNELS": "COTHER"}):
+            rr.route_once(s2, {CH: REPO}, "tok", opener=self.opener())
+        self.assertEqual(len(self.sent), 2)
+
+    def test_wake_channel_threads(self):
+        import os
+        from unittest import mock
+        # a teammate's thread: a reply that calls the bot counts, a reply that doesn't, doesn't
+        top = msg(self.now - 200, text="Hayat session notes", reply_count=2, latest_reply=f"{self.now - 10:.6f}")
+        plain = msg(self.now - 100, text="thanks Adam", thread_ts=top["ts"])
+        call = msg(self.now - 10, text=f"<@{BOT}> redo it", thread_ts=top["ts"])
+        # a thread the bot is already in: every human reply is a follow-up
+        top2 = msg(self.now - 300, text=f"<@{BOT}> deck?", reactions=[{"name": "white_check_mark", "users": [BOT]}],
+                   reply_count=2, latest_reply=f"{self.now - 5:.6f}")
+        bot2 = msg(self.now - 250, user=BOT, text="done", thread_ts=top2["ts"])
+        follow = msg(self.now - 5, text="make it shorter", thread_ts=top2["ts"])
+        s = FakeSlack([top, top2], replies={top["ts"]: [top, plain, call], top2["ts"]: [top2, bot2, follow]})
+        with mock.patch.dict(os.environ, {"ROUTER_WAKE_CHANNELS": CH}):
+            rr.route_once(s, {CH: REPO}, "tok", opener=self.opener())
+        self.assertEqual(sorted(b["client_payload"]["ts"] for _, b, _ in self.sent),
+                         sorted([call["ts"], follow["ts"]]))
+
     def test_only_routed_channels_are_read(self):
         s = FakeSlack([msg(self.now - 30)])
         rr.route_once(s, {CH: REPO}, "tok", opener=self.opener())
