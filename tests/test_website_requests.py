@@ -750,5 +750,34 @@ class DeployFailureTests(unittest.TestCase):
             self.assertFalse(wr.not_live_note("abc")[0])
 
 
+class HandoffTests(unittest.TestCase):
+    """AscendPoint AI passes on a request Patrick/Sonia made somewhere else ("📨 *Request from ...*")."""
+    HEAD = "\U0001f4e8 *Request from Sonia Hounsell* (<@USONIA>, via AscendPoint AI · <https://x.slack.com/p1|original message>)"
+
+    def test_top_level_handoff_from_this_bot_is_a_request_from_that_person(self):
+        m = msg(NOW - 10, user=BOT, text=self.HEAD + "\nChange the homepage headline to Own Your Area")
+        self.assertTrue(wr.is_request(m, BOT, "BBOT"))
+        req = wr.build_request(FakeSlack([]), "C1", m, None, BOT)
+        self.assertEqual(req["requester"], "Sonia Hounsell")
+        self.assertEqual(req["text"], "Change the homepage headline to Own Your Area")
+        self.assertEqual(req["kind"], "new")
+        self.assertEqual(wr.handoff_from(m, BOT), ("Sonia Hounsell", "USONIA"))
+
+    def test_lookalikes_are_not_requests(self):
+        body = self.HEAD + "\nChange the headline"
+        self.assertFalse(wr.is_request(msg(NOW - 10, user=BOT, text=body, thread_ts=f"{NOW - 99:.6f}"), BOT, "BBOT"))
+        self.assertFalse(wr.is_request(msg(NOW - 10, user=BOT, text="✅ Live"), BOT, "BBOT"))
+        self.assertFalse(wr.is_request(msg(NOW - 10, user=BOT, text=self.HEAD), BOT, "BBOT"))      # nothing to do
+        other_bot = msg(NOW - 10, user=None, text=body, bot_id="BZAP")
+        self.assertFalse(wr.is_request(other_bot, BOT, "BBOT"))
+        self.assertIsNone(wr.handoff_from(msg(NOW - 10, user="UPAT", text=body), BOT))         # people can't pose
+
+    def test_allowed_list_counts_the_person_behind_the_handoff(self):
+        m = msg(NOW - 10, user=BOT, text=self.HEAD + "\nChange the headline")
+        req = wr.find_next(FakeSlack([m]), "C1", now=NOW, allowed={"USONIA"})
+        self.assertIsNotNone(req)
+        self.assertIsNone(wr.find_next(FakeSlack([m]), "C1", now=NOW, allowed={"UPAT"}))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -30,6 +30,12 @@ Routes (Oct 2026): #serpdental-website-requests -> ascendpoint/serpdental-site (
 #social-requests -> ascendpoint/ads-assistant#social-request (the social calendar robot).
 A route may name its event type after '#' (default "website-request"), so one repo can host several robots.
 
+Patrick & Sonia watch (EXEC_ROUTE="ascendpoint/ads-assistant#exec-request", EXEC_PEOPLE="U06D77DKB88,U07TJCUD6JC"):
+every other channel the bot is in is polled once a minute (EXEC_POLL_SECONDS) for their messages; a quick model
+(ANTHROPIC_API_KEY, EXEC_TRIAGE_MODEL, default claude-haiku-4-5; keyword rules if it can't be reached) decides whether
+each is a request we could do, and those are sent to the exec robot. Follow-ups in its threads (⚡ footer) from them or
+EXEC_APPROVERS / the owner go straight through. EXEC_SKIP / SITE_CHANNEL: channels to leave alone.
+
 Social clock (SOCIAL_SCHEDULE="owner/repo:path/to/schedule.json"): once a minute the router reads the social robot's
 schedule (when a post is due to publish, needs confirming or a retry) and sends that repo a "social-tick" dispatch
 the moment something is due, so posts go out on time without a private-repo cron burning Actions minutes. The same
@@ -102,7 +108,7 @@ def wake_channels() -> set[str]:
 
 def wakes(msg: dict, bot_user: str) -> bool:
     text = msg.get("text", "") or ""
-    return f"<@{bot_user}" in text or bool(WAKE_RE.search(text))
+    return f"<@{bot_user}" in text or bool(WAKE_RE.search(text)) or bool(wr.handoff_from(msg, bot_user))
 
 
 def pending(slack, channel: str, bot_user: str, bot_id: str | None, start: float = 0.0,
@@ -332,6 +338,235 @@ def route_once(slack, routes: dict[str, str], token: str, start: float = 0.0, ca
     return sent
 
 
+# ----------------------------------------------------------------------------- Patrick & Sonia ("exec") watch
+# Every channel the bot is in that no robot owns (not in ROUTES, not the AscendPoint website channel) is watched for
+# messages from EXEC_PEOPLE. A cheap model screens each one ("a request we could do online, for Kyle / the bot / the
+# team?"); likely requests are marked 📥 and sent to EXEC_ROUTE (ascendpoint/ads-assistant#exec-request), which answers
+# or does it. Replies in a thread that robot answered (its footer carries ⚡) from the people or the approvers go
+# straight there (follow-ups, "yes"/"no"). Chatter is never touched: no reaction, no reply. Logs carry only
+# timestamps and the verdict (this repo is public).
+EXEC_MARK = "⚡"
+EXEC_MAX_AGE = 6 * 3600            # never pick up anything older (first start, long gaps)
+EXEC_LOOKBACK = 15 * 60            # on (re)start, re-screen only the last 15 minutes
+EXEC_CHANNELS_EVERY = 600          # re-list the bot's channels every 10 minutes
+TRIAGE_URL = "https://api.anthropic.com/v1/messages"
+TRIAGE_SYSTEM = """You screen Slack messages for AscendPoint AI, the assistant Kyle Robins (Growth Director, SERP Dental /
+AscendPoint Agency) built so that when Patrick Hounsell (Co-CEO) or Sonia Hounsell (co-owner) ask for something in
+Slack, it gets done online with no human: live numbers from Meta ads, Zoom webinars, GoHighLevel CRM (leads, calls,
+pipeline, texts/emails to contacts), Typeform; changes in those tools; website edits (serpdental.com,
+ascendpoint.agency); social posts; strategy-session prep (prospect audit + deck); research and drafting.
+
+Answer act=true when the message asks for information or an action (explicitly or implicitly, e.g. "what's the count
+for today?", "can we get the webinar on the homepage", "send Dr. Lee the replay", "how did the ads do this week",
+"we need a post about X") AND it is addressed to Kyle, to the assistant, to the team / nobody in particular.
+Answer act=false for: chit-chat, thanks, praise, reactions ("lol", "awesome"), FYIs and status updates, opinions,
+questions or tasks clearly aimed at someone other than Kyle (e.g. "@Adam did you call him?"), personal / HR / money
+between people, things only a person can do in the physical world, and messages that are just a reply in a human
+conversation that doesn't ask for anything.
+Reply with JSON only: {"act": true|false}"""
+
+
+def _ids(raw: str | None) -> set[str]:
+    return {p.strip().partition("=")[0].strip() for p in (raw or "").split(",") if p.strip().partition("=")[0].strip()}
+
+
+def exec_config() -> dict | None:
+    route = (os.environ.get("EXEC_ROUTE") or "").strip()
+    people = _ids(os.environ.get("EXEC_PEOPLE"))
+    if not route or not people or split_route(route)[0].count("/") != 1:
+        return None
+    owner = os.environ.get("ROUTER_OWNER") or DEFAULT_OWNER
+    skip = _ids(os.environ.get("EXEC_SKIP")) | _ids(os.environ.get("SITE_CHANNEL"))
+    return {"route": route, "people": people, "followers": people | {owner} | _ids(os.environ.get("EXEC_APPROVERS")),
+            "skip": skip, "owner": owner, "poll": float(os.environ.get("EXEC_POLL_SECONDS") or 60)}
+
+
+def exec_channels(slack, routes: dict, cfg: dict, cache: dict, now: float) -> list[str]:
+    """Channels (and DMs, when the app may read them) the bot is in, minus the ones a robot already owns."""
+    if now - cache.get("exec_listed", 0) < EXEC_CHANNELS_EVERY and "exec_channels" in cache:
+        return cache["exec_channels"]
+    types = cache.get("exec_types", "public_channel,private_channel,im")
+    ids, cursor = [], None
+    try:
+        while True:
+            r = slack.call("users.conversations", types=types, exclude_archived="true", limit=200, cursor=cursor)
+            ids += [c["id"] for c in r.get("channels", []) if not c.get("is_archived")]
+            cursor = (r.get("response_metadata") or {}).get("next_cursor")
+            if not cursor:
+                break
+    except Exception as e:
+        if "missing_scope" in str(e) and "im" in types:      # no im:read yet: watch channels only
+            cache["exec_types"] = "public_channel,private_channel"
+            return exec_channels(slack, routes, cfg, cache, now)
+        print(f"exec: listing channels failed ({type(e).__name__})", file=sys.stderr, flush=True)
+        return cache.get("exec_channels", [])
+    out = [c for c in ids if c not in routes and c not in cfg["skip"]]
+    cache["exec_channels"], cache["exec_listed"] = out, now
+    return out
+
+
+def _human(m: dict) -> bool:
+    return m.get("type") == "message" and m.get("subtype") in (None, "file_share", "thread_broadcast") \
+        and bool(m.get("user")) and not m.get("bot_id") and bool((m.get("text") or "").strip() or m.get("files"))
+
+
+THANKS_RE = re.compile(r"^\W*(thanks?( you)?|thx|ty|great|awesome|perfect|nice|cool|got it|love it|lol|"
+                       r"amazing|beautiful|sweet|:[a-z0-9_+-]+:)\W*$", re.I)
+
+
+def exec_thread(thread: list[dict], bot_user: str) -> bool:
+    """A thread the exec robot answered in (its footer carries ⚡)."""
+    return any(x.get("user") == bot_user and EXEC_MARK in (x.get("text") or "") for x in thread)
+
+
+def exec_pending(slack, channel: str, cfg: dict, bot_user: str, oldest: float, cache: dict) -> list[dict]:
+    """New messages from the watched people (to screen) and follow-ups in exec threads (sent as-is), oldest first."""
+    quiet = cache.setdefault(("exec_quiet", channel), {})
+    seen = cache.setdefault("exec_seen", set())
+    hist = slack.call("conversations.history", channel=channel, oldest=f"{oldest:.6f}", limit=200)
+    out = []
+    for m in hist.get("messages", []):
+        if _human(m) and m.get("user") in cfg["people"] and m["ts"] not in seen and not done_by_bot(m, bot_user) \
+                and (not m.get("thread_ts") or m.get("thread_ts") == m["ts"]):
+            out.append({"ts": m["ts"], "thread_ts": None, "screen": True, "msg": m})
+        if m.get("reply_count"):
+            marker = m.get("latest_reply") or str(m.get("reply_count"))
+            if quiet.get(m["ts"]) == marker:
+                continue
+            thread = slack.call("conversations.replies", channel=channel, ts=m["ts"], limit=200).get("messages", [])
+            ours = exec_thread(thread, bot_user)
+            for r in thread[1:]:
+                if float(r["ts"]) < oldest or r["ts"] in seen or not _human(r) or done_by_bot(r, bot_user):
+                    continue
+                if ours and r.get("user") in cfg["followers"]:
+                    if THANKS_RE.match(r.get("text") or "") and not r.get("files"):
+                        seen.add(r["ts"])            # "thanks!" under our answer needs nothing
+                        continue
+                    out.append({"ts": r["ts"], "thread_ts": m["ts"], "screen": False, "msg": r})
+                elif r.get("user") in cfg["people"]:
+                    out.append({"ts": r["ts"], "thread_ts": m["ts"], "screen": True, "msg": r, "thread": thread})
+            quiet[m["ts"]] = marker
+    return sorted(out, key=lambda x: float(x["ts"]))
+
+
+def _name(slack, uid: str | None, cache: dict) -> str:
+    names = cache.setdefault("exec_names", {})
+    if uid and uid not in names:
+        try:
+            u = slack.call("users.info", user=uid)["user"]
+            names[uid] = u.get("real_name") or (u.get("profile") or {}).get("real_name") or u.get("name") or uid
+        except Exception:
+            names[uid] = uid
+    return names.get(uid or "", "someone")
+
+
+def _plain(slack, text: str, cache: dict, bot_user: str) -> str:
+    text = (text or "").replace(f"<@{bot_user}>", "@AscendPoint AI")
+    return re.sub(r"<@([UW][A-Z0-9]+)>", lambda m: "@" + _name(slack, m.group(1), cache), text)
+
+
+ASK_RE = re.compile(r"\?|^\s*(can|could|would|will|pls|please|let'?s|need|we need|pull|send|post|add|remove|change|"
+                    r"update|make|create|build|set up|setup|book|schedule|text|email|find|check|get|give|show|what|how|"
+                    r"when|who|where|which|is there|are there|do we|did we)\b", re.I)
+
+
+def heuristic(text: str, bot_user: str, owner: str) -> bool:
+    """Fallback screen when the model can't be reached: a question or an ask, addressed to Kyle / the bot / nobody."""
+    others = set(re.findall(r"<@([UW][A-Z0-9]+)>", text or "")) - {bot_user, owner}
+    if others and f"<@{owner}>" not in text and f"<@{bot_user}>" not in text:
+        return False
+    return bool(ASK_RE.search(re.sub(r"<@[UW][A-Z0-9]+>[,:]?\s*", "", text or "")))
+
+
+def screen(slack, item: dict, channel: str, bot_user: str, cfg: dict, cache: dict, opener=None) -> bool:
+    """True when the message looks like a request we could do. Model first (EXEC_TRIAGE_MODEL), heuristic fallback."""
+    m = item["msg"]
+    key = os.environ.get("ANTHROPIC_API_KEY")
+    if not key:
+        return heuristic(m.get("text", ""), bot_user, cfg["owner"])
+    try:
+        if item.get("thread"):
+            before = [x for x in item["thread"] if float(x["ts"]) < float(m["ts"])][-5:]
+        else:
+            before = list(reversed(slack.call("conversations.history", channel=channel, latest=m["ts"],
+                                              inclusive="false", limit=4).get("messages", [])))
+        ctx = "\n".join(f"{'AscendPoint AI' if x.get('user') == bot_user else (x.get('username') or _name(slack, x.get('user'), cache))}: "
+                        f"{_plain(slack, x.get('text', ''), cache, bot_user)[:300]}" for x in before)
+        who = _name(slack, m.get("user"), cache)
+        user = (f"Earlier messages:\n{ctx or '(none)'}\n\nMessage to screen, from {who}"
+                f"{' (has attachments)' if m.get('files') else ''}:\n{_plain(slack, m.get('text', ''), cache, bot_user)[:2000]}")
+        body = {"model": os.environ.get("EXEC_TRIAGE_MODEL") or "claude-haiku-4-5", "max_tokens": 20,
+                "system": TRIAGE_SYSTEM, "messages": [{"role": "user", "content": user}]}
+        hdrs = {"x-api-key": key, "anthropic-version": "2023-06-01", "content-type": "application/json"}
+        if os.environ.get("ANTHROPIC_WORKSPACE_ID"):
+            hdrs["anthropic-workspace-id"] = os.environ["ANTHROPIC_WORKSPACE_ID"]
+        req = urllib.request.Request(TRIAGE_URL, data=json.dumps(body).encode(), headers=hdrs, method="POST")
+        with (opener or urllib.request.urlopen)(req, timeout=30) as r:
+            out = json.loads(r.read().decode())
+        text = "".join(c.get("text", "") for c in out.get("content", []) if c.get("type") == "text")
+        hit = re.search(r'"act"\s*:\s*(true|false)', text, re.I)
+        if hit:
+            return hit.group(1).lower() == "true"
+        raise ValueError("no verdict")
+    except Exception as e:
+        print(f"exec screen fell back to rules ({type(e).__name__} {getattr(e, 'code', '')})", file=sys.stderr, flush=True)
+        return heuristic(m.get("text", ""), bot_user, cfg["owner"])
+
+
+def exec_once(slack, routes: dict, token: str, cache: dict, bot_user: str, opener=None, screen_opener=None,
+              now: float | None = None, start: float = 0.0) -> int:
+    cfg = exec_config()
+    if not cfg:
+        return 0
+    now = now or time.time()
+    if now - cache.get("exec_polled", 0) < cfg["poll"]:
+        return 0
+    cache["exec_polled"] = now
+    oldest = max(start, cache.setdefault("exec_start", now - EXEC_LOOKBACK), now - EXEC_MAX_AGE)
+    seen = cache.setdefault("exec_seen", set())
+    retry_at = cache.setdefault("exec_retry", {})
+    sent = 0
+    for channel in exec_channels(slack, routes, cfg, cache, now):
+        try:
+            items = exec_pending(slack, channel, cfg, bot_user, oldest, cache)
+        except Exception as e:
+            print(f"exec poll failed ({type(e).__name__})", file=sys.stderr, flush=True)
+            continue
+        for it in items:
+            if retry_at.get(it["ts"], 0) > now:
+                continue
+            if it["screen"]:
+                act = screen(slack, it, channel, bot_user, cfg, cache, screen_opener)
+                print(f"exec {it['ts']}: {'request' if act else 'skip'}", flush=True)
+                if not act:
+                    seen.add(it["ts"])
+                    continue
+            slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=QUEUED)
+            status: dict = {}
+            if dispatch(cfg["route"], token, {"channel": channel, "ts": it["ts"], "thread_ts": it["thread_ts"]},
+                        opener, status):
+                seen.add(it["ts"])
+                sent += 1
+                retry_at.pop(it["ts"], None)
+                print(f"queued {it['ts']} -> exec", flush=True)
+            else:
+                slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=QUEUED)
+                retry_at[it["ts"]] = now + RETRY_SECONDS
+                if it["thread_ts"]:          # re-read that thread next time
+                    cache.setdefault(("exec_quiet", channel), {}).pop(it["thread_ts"], None)
+                told = cache.setdefault("exec_told", set())
+                if not told:      # once per router run: tell the owner privately, never in their thread
+                    told.add(it["ts"])
+                    why = WHY.get(status.get("code", 0), "GitHub couldn't be reached")
+                    try:
+                        slack.call("chat.postMessage", channel=cfg["owner"], unfurl_links="false",
+                                   text=f":warning: Patrick/Sonia requests can't reach `{split_route(cfg['route'])[0]}`: "
+                                        f"{why}. I'll keep retrying every minute.")
+                    except Exception:
+                        pass
+    return sent
+
+
 CODE = [Path(__file__).resolve(), Path(__file__).resolve().parent / "website_requests.py"]
 
 
@@ -359,6 +594,11 @@ def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0
             total += route_once(slack, routes, token, start=start, cache=cache)
         except Exception as e:
             print(f"router error: {type(e).__name__}", file=sys.stderr, flush=True)
+        try:
+            if "auth" in cache:
+                total += exec_once(slack, routes, token, cache, cache["auth"]["user_id"], start=start)
+        except Exception as e:
+            print(f"exec error: {type(e).__name__}", file=sys.stderr, flush=True)
         if watch_code and clock() - last_pull > 300:
             last_pull = clock()
             if code_changed(snapshot):             # e.g. new "handled" reactions: restart into the new code

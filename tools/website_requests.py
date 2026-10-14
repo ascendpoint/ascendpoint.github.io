@@ -96,6 +96,24 @@ SITE_DIR = "site/"               # the only place the robot may change anything
 GIT_USER = ("-c", "user.name=AscendPoint AI", "-c", "user.email=website-bot@ascendpoint.agency")
 IGNORE_RE = re.compile(r"^\s*(//|note:|fyi\b)", re.I)
 EMAIL_PREFIX = "📧"
+# A request AscendPoint AI posts here on someone's behalf (Patrick/Sonia asked it in another channel):
+# "📨 *Request from Patrick Hounsell* (<@U06D77DKB88>, via AscendPoint AI · <link|original message>)\n<request>".
+# Only TOP-LEVEL posts by this bot count, so nothing else can pose as a requester.
+HANDOFF_PREFIX = "\U0001f4e8"
+HANDOFF_RE = re.compile("^" + HANDOFF_PREFIX + r"\s*\*Request from ([^*\n]+)\*(?:\s*\(<@([UW][A-Z0-9]+)>)?")
+
+
+def handoff_from(msg: dict, bot_user: str) -> tuple[str, str | None] | None:
+    """(requester name, Slack id) when `msg` is AscendPoint AI's hand-off post, else None."""
+    if msg.get("user") != bot_user or (msg.get("thread_ts") and msg.get("thread_ts") != msg.get("ts")):
+        return None
+    m = HANDOFF_RE.match(msg.get("text") or "")
+    return (m.group(1).strip(), m.group(2)) if m else None
+
+
+def handoff_body(text: str) -> str:
+    head, _, body = (text or "").partition("\n")
+    return body.strip() if HANDOFF_RE.match(head) and body.strip() else (text or "")
 RESULT = Path("/tmp/website_request_result.json")
 # Files attached in Slack (photos, logos, screenshots) are downloaded INSIDE the repo (git-ignored) so the
 # headless Claude can open them: tools outside its working folder are refused in dontAsk mode.
@@ -231,6 +249,8 @@ def is_request(msg: dict, bot_user: str, bot_id: str | None) -> bool:
         return False
     sub = msg.get("subtype")
     text = msg.get("text", "") or ""
+    if handoff_from(msg, bot_user):         # needs an actual request under the 📨 header line
+        return sub in (None, "bot_message") and bool(text.partition("\n")[2].strip())
     if msg.get("user") == bot_user or (bot_id and msg.get("bot_id") == bot_id):
         return False
     if email_file(msg) and sub in (None, "file_share", "bot_message"):
@@ -290,6 +310,7 @@ def find_next(slack: Slack, channel: str, now: float | None = None,
     if allowed:
         candidates = [c for c in candidates
                       if c[0].get("user") in allowed or email_file(c[0])
+                      or (handoff_from(c[0], bot_user) or ("", None))[1] in allowed
                       or c[0].get("text", "").startswith(EMAIL_PREFIX)]
     if not candidates:
         return None
@@ -359,7 +380,10 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
                 files.append({"name": a.get("filename") or a.get("name"), "mimetype": a.get("mimetype"),
                               "url": url})
     else:
-        requester = user_name(slack, msg.get("user"))
+        handed = handoff_from(msg, bot_user)
+        requester = handed[0] if handed else user_name(slack, msg.get("user"))
+        if handed:
+            text = handoff_body(text)
         if text.startswith(EMAIL_PREFIX):
             m = re.match(r"📧\s*Email request from\s+([^:\n]+)", text)
             requester = (m.group(1).strip() if m else "email") + " (email)"

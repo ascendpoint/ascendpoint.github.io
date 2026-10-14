@@ -364,3 +364,207 @@ class SocialRouteTests(unittest.TestCase):
         cache["watch_polled"] = {}
         self.assertEqual(rr.route_once(s, {"C1": "ascendpoint/ads-assistant#social-request"}, "tok", cache=cache,
                                        opener=self.opener()), 0)
+
+
+# ----------------------------------------------------------------------------- Patrick & Sonia watch
+import os  # noqa: E402
+from unittest import mock  # noqa: E402
+
+PAT, SONIA, KYLE, ADAM = "U06D77DKB88", "U07TJCUD6JC", "U04Q3M29UKE", "UADAM"
+LEADS = "CLEADS"
+EXEC_ENV = {"EXEC_ROUTE": "ascendpoint/ads-assistant#exec-request", "EXEC_PEOPLE": f"{PAT}=Patrick,{SONIA}",
+            "ROUTER_OWNER": KYLE, "EXEC_SKIP": "CSKIP", "SITE_CHANNEL": "CSITE", "EXEC_POLL_SECONDS": "60",
+            "ANTHROPIC_API_KEY": "sk-test", "ANTHROPIC_WORKSPACE_ID": "wrkspc_1"}
+
+
+class ExecSlack(FakeSlack):
+    def __init__(self, history=(), replies=None, channels=(LEADS,), im_scope=True):
+        super().__init__(history, replies)
+        self.channels, self.im_scope = list(channels), im_scope
+        self.names = {PAT: "Patrick Hounsell", SONIA: "Sonia Hounsell", KYLE: "Kyle Robins", ADAM: "Adam Callahan"}
+
+    def call(self, method, **p):
+        if method == "users.conversations":
+            self.calls.append((method, p))
+            if "im" in p["types"] and not self.im_scope:
+                raise RuntimeError("slack users.conversations: missing_scope im:read")
+            return {"ok": True, "channels": [{"id": c} for c in self.channels]}
+        if method == "users.info":
+            self.calls.append((method, p))
+            return {"ok": True, "user": {"real_name": self.names.get(p["user"], p["user"])}}
+        if method == "conversations.history" and "latest" in p:
+            self.calls.append((method, p))
+            msgs = [m for m in self.history if float(m["ts"]) < float(p["latest"])]
+            return {"ok": True, "messages": sorted(msgs, key=lambda m: -float(m["ts"]))[:int(p.get("limit", 100))]}
+        return super().call(method, **p)
+
+
+class ExecWatchTests(unittest.TestCase):
+    def setUp(self):
+        self.now = time.time()
+        self.sent, self.screens = [], []
+        self.verdict = True
+        self.env = mock.patch.dict(os.environ, EXEC_ENV)
+        self.env.start()
+
+    def tearDown(self):
+        self.env.stop()
+
+    def opener(self, status=204):
+        def _open(req, timeout=30):
+            self.sent.append((req.full_url, json.loads(req.data.decode()), req.headers))
+            if status >= 400:
+                import urllib.error
+                raise urllib.error.HTTPError(req.full_url, status, "err", {}, None)
+            return FakeResp(status)
+        return _open
+
+    def screen_opener(self, req, timeout=30):
+        body = json.loads(req.data.decode())
+        self.screens.append((body, dict(req.headers)))
+        if self.verdict is None:
+            raise OSError("api down")
+
+        class R(FakeResp):
+            def read(s):
+                return json.dumps({"content": [{"type": "text", "text": json.dumps({"act": self.verdict})}]}).encode()
+        return R(200)
+
+    def run_once(self, slack, routes=None, cache=None, now=None, status=204):
+        cache = cache if cache is not None else {}
+        n = rr.exec_once(slack, routes or {CH: REPO}, "tok", cache, BOT, opener=self.opener(status),
+                         screen_opener=self.screen_opener, now=now or self.now)
+        return n, cache
+
+    def test_config_needs_route_and_people(self):
+        self.assertIsNotNone(rr.exec_config())
+        cfg = rr.exec_config()
+        self.assertEqual(cfg["people"], {PAT, SONIA})
+        self.assertEqual(cfg["followers"], {PAT, SONIA, KYLE})
+        self.assertEqual(cfg["skip"], {"CSKIP", "CSITE"})
+        with mock.patch.dict(os.environ, {"EXEC_ROUTE": ""}):
+            self.assertIsNone(rr.exec_config())
+        s = ExecSlack([msg(self.now - 30, user=PAT, text="what's the count?")])
+        with mock.patch.dict(os.environ, {"EXEC_PEOPLE": ""}):
+            self.assertEqual(self.run_once(s)[0], 0)
+        self.assertEqual(self.sent, [])
+
+    def test_patrick_question_is_screened_marked_and_sent_to_the_exec_robot(self):
+        q = msg(self.now - 30, user=PAT, text=f"<@{KYLE}> what's the count for today?")
+        zap = msg(self.now - 120, user=None, text="New Webinar Registrant: Gen Mann", bot_id="BZAP", username="Zapier")
+        s = ExecSlack([zap, q])
+        n, cache = self.run_once(s)
+        self.assertEqual(n, 1)
+        url, body, _ = self.sent[0]
+        self.assertEqual(url, "https://api.github.com/repos/ascendpoint/ads-assistant/dispatches")
+        self.assertEqual(body, {"event_type": "exec-request",
+                                "client_payload": {"channel": LEADS, "ts": q["ts"], "thread_ts": None}})
+        self.assertEqual(s.reacted("reactions.add"), [(q["ts"], "inbox_tray")])
+        screen, hdrs = self.screens[0]
+        self.assertEqual(screen["model"], "claude-haiku-4-5")
+        text = screen["messages"][0]["content"]
+        self.assertIn("from Patrick Hounsell", text)
+        self.assertIn("@Kyle Robins what's the count for today?", text)        # mentions resolved to names
+        self.assertIn("Zapier: New Webinar Registrant", text)                  # what came before
+        self.assertEqual(hdrs.get("Anthropic-workspace-id"), "wrkspc_1")
+        self.assertEqual(hdrs.get("X-api-key"), "sk-test")
+        # next minute: nothing new, nothing re-screened or re-sent
+        self.run_once(s, cache=cache, now=self.now + 61)
+        self.assertEqual((len(self.sent), len(self.screens)), (1, 1))
+
+    def test_chatter_is_left_alone_and_not_rescreened(self):
+        self.verdict = False
+        s = ExecSlack([msg(self.now - 30, user=SONIA, text="that's where i put it")])
+        n, cache = self.run_once(s)
+        self.assertEqual((n, self.sent, s.reacted("reactions.add")), (0, [], []))
+        self.run_once(s, cache=cache, now=self.now + 61)
+        self.assertEqual(len(self.screens), 1)
+
+    def test_other_people_and_bots_are_never_screened(self):
+        s = ExecSlack([msg(self.now - 30, user=ADAM, text="can you pull the count?"),
+                       msg(self.now - 20, user=None, text="can you pull the count?", bot_id="BZAP"),
+                       msg(self.now - 10, user=PAT, subtype="channel_join", text="joined")])
+        self.assertEqual(self.run_once(s)[0], 0)
+        self.assertEqual(self.screens, [])
+
+    def test_poll_interval_and_lookback(self):
+        old = msg(self.now - 3600, user=PAT, text="what's the count?")       # before this router started
+        s = ExecSlack([old])
+        n, cache = self.run_once(s)
+        self.assertEqual(n, 0)
+        s.history.append(msg(self.now + 5, user=PAT, text="and yesterday's?"))
+        self.assertEqual(self.run_once(s, cache=cache, now=self.now + 10)[0], 0)    # < 60 s since the last poll
+        self.assertEqual(self.run_once(s, cache=cache, now=self.now + 61)[0], 1)
+
+    def test_routed_skipped_and_dm_channels(self):
+        s = ExecSlack([], channels=[LEADS, CH, "CSKIP", "CSITE", "DPAT"], im_scope=False)
+        cfg = rr.exec_config()
+        self.assertEqual(rr.exec_channels(s, {CH: REPO}, cfg, {}, self.now), [LEADS, "DPAT"])
+        types = [p["types"] for m, p in s.calls if m == "users.conversations"]
+        self.assertEqual(types, ["public_channel,private_channel,im", "public_channel,private_channel"])
+
+    def test_follow_ups_in_our_thread_skip_the_screen_and_thanks_is_ignored(self):
+        top = msg(self.now - 300, user=PAT, text="what's the count?",
+                  reactions=[{"name": "white_check_mark", "users": [BOT]}], reply_count=4, latest_reply="x")
+        ans = msg(self.now - 280, user=BOT, text=f"*41 registered*\n_{rr.EXEC_MARK} AscendPoint AI · Sonnet · 9s_",
+                  thread_ts=top["ts"])
+        yes = msg(self.now - 60, user=KYLE, text="yes", thread_ts=top["ts"])
+        thx = msg(self.now - 50, user=PAT, text="thanks!", thread_ts=top["ts"])
+        adam = msg(self.now - 40, user=ADAM, text="can you also pull last week?", thread_ts=top["ts"])
+        s = ExecSlack([top], replies={top["ts"]: [top, ans, yes, thx, adam]})
+        n, _ = self.run_once(s)
+        self.assertEqual(n, 1)
+        self.assertEqual(self.sent[0][1]["client_payload"], {"channel": LEADS, "ts": yes["ts"], "thread_ts": top["ts"]})
+        self.assertEqual(self.screens, [])
+
+    def test_patrick_reply_in_a_human_thread_is_screened(self):
+        top = msg(self.now - 300, user=ADAM, text="Dr. Lee booked", reply_count=1, latest_reply="x")
+        r = msg(self.now - 30, user=PAT, text="can we text him the replay link?", thread_ts=top["ts"])
+        s = ExecSlack([top], replies={top["ts"]: [top, r]})
+        self.assertEqual(self.run_once(s)[0], 1)
+        self.assertEqual(self.sent[0][1]["client_payload"]["thread_ts"], top["ts"])
+        self.assertIn("Adam Callahan: Dr. Lee booked", self.screens[0][0]["messages"][0]["content"])
+
+    def test_model_down_falls_back_to_rules(self):
+        self.verdict = None
+        s = ExecSlack([msg(self.now - 30, user=PAT, text="what's the count for today?"),
+                       msg(self.now - 20, user=SONIA, text=f"<@{ADAM}> did you call him?"),
+                       msg(self.now - 10, user=SONIA, text="love this deck")])
+        self.assertEqual(self.run_once(s)[0], 1)
+        self.assertTrue(rr.heuristic(f"<@{KYLE}> can you pull it", BOT, KYLE))
+        self.assertTrue(rr.heuristic("please add the banner", BOT, KYLE))
+        self.assertFalse(rr.heuristic("awesome week team", BOT, KYLE))
+
+    def test_failed_hand_off_tells_owner_privately_once_and_retries(self):
+        s = ExecSlack([msg(self.now - 30, user=PAT, text="what's the count?"),
+                       msg(self.now - 20, user=SONIA, text="how many booked calls today?")])
+        n, cache = self.run_once(s, status=404)
+        self.assertEqual(n, 0)
+        dms = [p for m, p in s.calls if m == "chat.postMessage"]
+        self.assertEqual(len(dms), 1)
+        self.assertEqual(dms[0]["channel"], KYLE)
+        self.assertIn("can't see that repo", dms[0]["text"])
+        self.assertEqual(s.reacted("reactions.remove"), [(s.history[0]["ts"], "inbox_tray"), (s.history[1]["ts"], "inbox_tray")])
+        n, _ = self.run_once(s, cache=cache, now=self.now + 61)
+        self.assertEqual(n, 2)
+
+
+class HandoffRoutingTests(unittest.TestCase):
+    HEAD = "\U0001f4e8 *Request from Patrick Hounsell* (<@UPAT>, via AscendPoint AI)"
+
+    def test_handoff_post_in_a_routed_channel_is_dispatched(self):
+        now = time.time()
+        sent = []
+        def opener(req, timeout=30):
+            sent.append(json.loads(req.data.decode()))
+            return FakeResp()
+        s = FakeSlack([msg(now - 20, user=BOT, text=self.HEAD + "\nChange the hero headline"),
+                       msg(now - 10, user=BOT, text="✅ Live")])
+        self.assertEqual(rr.route_once(s, {CH: REPO}, "tok", opener=opener), 1)
+        self.assertEqual(sent[0]["client_payload"]["ts"], f"{now - 20:.6f}")
+
+    def test_handoff_wakes_a_wake_only_channel(self):
+        self.assertTrue(rr.wakes(msg(1.0, user=BOT, text=self.HEAD + "\nbuild the deck for Dr. Lee"), BOT))
+        self.assertFalse(rr.wakes(msg(1.0, user=BOT, text="\u2705 Deck is ready"), BOT))
+        # a bot reply that quotes the header is not a request at all (is_request runs before wakes)
+        self.assertFalse(rr.wr.is_request(msg(1.0, user=BOT, text=self.HEAD + "\nx", thread_ts="0.5"), BOT, "BBOT"))

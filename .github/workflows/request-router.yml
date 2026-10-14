@@ -16,6 +16,8 @@ name: Request router (Slack -> other sites' robots)
 # #social-requests routes to ascendpoint/ads-assistant#social-request (the social calendar robot), and variable
 # SOCIAL_SCHEDULE (ascendpoint/ads-assistant:content/social/schedule.json) turns on the social clock: the router
 # sends "social-tick" the minute a post is due to publish or needs confirming.
+# Patrick & Sonia (EXEC_ROUTE / EXEC_PEOPLE): every other channel the bot is in is watched for their requests, which
+# go to ascendpoint/ads-assistant#exec-request (answer / do it / hand off / log what's missing).
 
 on:
   schedule:
@@ -44,6 +46,17 @@ jobs:
       ROUTER_WAKE_CHANNELS: ${{ vars.ROUTER_WAKE_CHANNELS }}
       ROUTER_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
       SOCIAL_SCHEDULE: ${{ vars.SOCIAL_SCHEDULE }}
+      # Patrick & Sonia watch: their messages anywhere the bot is (outside the routed channels) are screened by a
+      # quick model and the likely requests go to ascendpoint/ads-assistant#exec-request. See tools/request_router.py.
+      EXEC_ROUTE: ${{ vars.EXEC_ROUTE }}
+      EXEC_PEOPLE: ${{ vars.EXEC_PEOPLE }}
+      EXEC_APPROVERS: ${{ vars.EXEC_APPROVERS }}
+      EXEC_SKIP: ${{ vars.EXEC_SKIP }}
+      EXEC_POLL_SECONDS: ${{ vars.EXEC_POLL_SECONDS }}
+      EXEC_TRIAGE_MODEL: ${{ vars.EXEC_TRIAGE_MODEL }}
+      SITE_CHANNEL: ${{ vars.SLACK_CHANNEL_ID }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
       GH_TOKEN: ${{ github.token }}
     steps:
       - name: Only one router at a time
