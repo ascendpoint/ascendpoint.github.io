@@ -481,6 +481,9 @@ def heuristic(text: str, bot_user: str, owner: str) -> bool:
 def screen(slack, item: dict, channel: str, bot_user: str, cfg: dict, cache: dict, opener=None) -> bool:
     """True when the message looks like a request we could do. Model first (EXEC_TRIAGE_MODEL), heuristic fallback."""
     m = item["msg"]
+    if any((f.get("mimetype") or "").startswith(("audio/", "video/")) or f.get("subtype") in ("slack_audio", "slack_video")
+           for f in m.get("files") or []):
+        return True          # a voice message can't be screened as text: the robot transcribes it and decides
     key = os.environ.get("ANTHROPIC_API_KEY")
     if not key:
         return heuristic(m.get("text", ""), bot_user, cfg["owner"])

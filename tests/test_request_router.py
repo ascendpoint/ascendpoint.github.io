@@ -525,6 +525,13 @@ class ExecWatchTests(unittest.TestCase):
         self.assertEqual(self.sent[0][1]["client_payload"]["thread_ts"], top["ts"])
         self.assertIn("Adam Callahan: Dr. Lee booked", self.screens[0][0]["messages"][0]["content"])
 
+    def test_voice_message_goes_through_unscreened(self):
+        self.verdict = False
+        clip = {"id": "F1", "mimetype": "audio/mp4", "subtype": "slack_audio"}
+        s = ExecSlack([msg(self.now - 30, user=PAT, text="", files=[clip])])
+        self.assertEqual(self.run_once(s)[0], 1)
+        self.assertEqual(self.screens, [])
+
     def test_model_down_falls_back_to_rules(self):
         self.verdict = None
         s = ExecSlack([msg(self.now - 30, user=PAT, text="what's the count for today?"),
