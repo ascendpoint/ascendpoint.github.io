@@ -372,6 +372,16 @@ class ModelRoutingTests(unittest.TestCase):
                   "Add a testimonial carousel", "Redesign the contact page layout", "Add hover effects to the cards"]:
             self.assertEqual(self.pick(t), ("opus", "advanced"), t)
 
+    def test_blog_posts_from_a_link_use_opus(self):
+        sonia = ("Create a blog post for the AscendPoint Agency site that uses this blog content: "
+                 "<https://serpdental.com/blog/advertising-week-2026-lessons-dental-marketing|serpdental.com/blog/adv>")
+        for t in [sonia, "Post this article on our blog", "write a new post about our MMW acquisition",
+                  "Can you repurpose this for the AscendPoint site?"]:
+            self.assertEqual(self.pick(t), ("opus", "advanced"), t)
+        # a short wording fix that comes with a link is never handed to the cheapest model
+        req = {"text": "Change the headline", "context": [], "kind": "new", "links": ["https://x.com/a"]}
+        self.assertEqual(wr.choose_model(req)[1], "standard")
+
     def test_overrides(self):
         self.assertEqual(self.pick("[opus] change the headline"), ("opus", "advanced"))
         self.assertEqual(self.pick("try harder"), ("opus", "advanced"))
@@ -442,7 +452,8 @@ class EndToEndTests(unittest.TestCase):
         self.repo = self.tmp / "repo"
         subprocess.run(["git", "clone", "-q", str(ROOT), str(self.repo)], check=True)
         # include uncommitted robot files so the test runs before they are committed
-        for rel in ("tools/website_requests.py", "tools/img_for_web.py", ".gitignore"):
+        for rel in ("tools/website_requests.py", "tools/img_for_web.py", "tools/web_read.py", "tools/build.py",
+                    "tools/check.py", ".gitignore"):
             shutil.copy(ROOT / rel, self.repo / rel)
         shutil.copytree(ROOT / "tools/models", self.repo / "tools/models", dirs_exist_ok=True)
         subprocess.run(["git", "-C", str(self.repo), "add", "-A"], check=True)
@@ -748,6 +759,144 @@ class DeployFailureTests(unittest.TestCase):
     def test_gh_hiccup_is_treated_as_slow(self):
         with mock.patch.object(wr, "sh", lambda *a, **k: subprocess.CompletedProcess(a, 1, "not json", "")):
             self.assertFalse(wr.not_live_note("abc")[0])
+
+
+SONIA_TEXT = ("Create a blog post for the AscendPoint Agency site that uses this blog content: "
+              "<https://serpdental.com/blog/advertising-week-2026-lessons-dental-marketing|"
+              "serpdental.com/blog/advertising-week-2026-lessons-dental-marketing>")
+UNFURL = {"from_url": "https://serpdental.com/blog/advertising-week-2026-lessons-dental-marketing",
+          "title": "3 Lessons from Advertising Week 2026 for Dental and Medical Marketing: CTV, Trust ...",
+          "text": "Three lessons from Advertising Week New York 2026 for dental and medical practices.",
+          "service_name": "SERP Dental™", "image_url": "https://serpdental.com/x.jpg"}
+
+
+class LinkTests(unittest.TestCase):
+    """Links in a request are found (Slack markup, bare text, link previews) so the robot can read them."""
+
+    def test_finds_slack_links_once_and_skips_slack_itself(self):
+        text = (SONIA_TEXT + " and <https://serpdental.com/blog/advertising-week-2026-lessons-dental-marketing/> "
+                "plus https://medicalmarketingwhiz.com/blog/x?a=1&amp;b=2. Ping <@U123> in <#C1|general>, "
+                "file https://ascendpointagency.slack.com/files/U1/F1/x.png and <mailto:a@b.com|a@b.com>")
+        self.assertEqual(wr.find_links(text), [
+            "https://serpdental.com/blog/advertising-week-2026-lessons-dental-marketing",
+            "https://medicalmarketingwhiz.com/blog/x?a=1&b=2"])
+
+    def test_request_carries_links_and_slack_previews(self):
+        m = msg(NOW - 10, user="USONIA", text=SONIA_TEXT, attachments=[UNFURL])
+        req = wr.build_request(FakeSlack([], users={"USONIA": "Sonia Hounsell"}), "C1", m, None, BOT)
+        self.assertEqual(req["links"], [UNFURL["from_url"]])
+        self.assertEqual(req["previews"][0]["title"], UNFURL["title"])
+
+    def test_followup_retry_still_reads_the_link_from_the_thread(self):
+        top = msg(NOW - 100, user="USONIA", text=SONIA_TEXT, attachments=[UNFURL], reply_count=2,
+                  latest_reply=f"{NOW - 10:.6f}")
+        bot = msg(NOW - 90, user=BOT, text="💬 Could you paste the article? <https://bot.example/x|x>",
+                  thread_ts=top["ts"])
+        retry = msg(NOW - 10, user="UKYLE", text="retry", thread_ts=top["ts"])
+        top["reactions"] = [{"name": "speech_balloon", "users": [BOT]}]
+        req = wr.find_next(FakeSlack([top], replies={top["ts"]: [top, bot, retry]}), "C1", now=NOW)
+        self.assertEqual(req["kind"], "followup")
+        self.assertEqual(req["links"], [UNFURL["from_url"]])            # not the bot's own link
+
+    def test_redo_rebuilds_any_message_by_timestamp(self):
+        top = msg(NOW - 100, user="USONIA", text=SONIA_TEXT,
+                  reactions=[{"name": "speech_balloon", "users": [BOT]}])        # already answered
+        reply = msg(NOW - 10, user="UKYLE", text="retry", thread_ts=top["ts"])
+
+        class HistSlack(FakeSlack):
+            def call(self, method, **p):
+                if method == "conversations.history":
+                    self.calls.append((method, p))
+                    return {"ok": True, "messages": [m for m in self.history if m["ts"] == p["latest"]]}
+                return super().call(method, **p)
+
+        sl = HistSlack([top], replies={top["ts"]: [top, reply]}, users={"USONIA": "Sonia Hounsell"})
+        req = wr.fetch_request(sl, "C1", top["ts"])
+        self.assertEqual((req["kind"], req["requester"], req["links"]),
+                         ("new", "Sonia Hounsell", [UNFURL["from_url"]]))
+        req = wr.fetch_request(sl, "C1", reply["ts"], top["ts"])
+        self.assertEqual((req["kind"], req["thread_ts"]), ("followup", top["ts"]))
+        self.assertIsNone(wr.fetch_request(sl, "C1", "123.456"))
+
+    def test_listener_can_pick_up_a_requeued_message_again_later(self):
+        clock = {"t": NOW}
+        reqs = [{"ts": "1.0", "kind": "new", "requester": "Sonia"}] * 3
+        done = []
+
+        def fake_find(*a, **k):
+            clock["t"] += 100
+            return reqs.pop() if reqs else None
+        with mock.patch.object(wr, "find_next", fake_find), \
+                mock.patch.object(wr, "claim", lambda *a: None), \
+                mock.patch.object(wr, "finish", lambda sl, req, live: done.append(clock["t"])), \
+                mock.patch.object(wr, "sh", lambda *a, **k: None):
+            wr.listen(FakeSlack([]), "C1", "https://x", minutes=10, poll=1, sleep=lambda s: clock.__setitem__(
+                "t", clock["t"] + s), clock=lambda: clock["t"])
+        self.assertEqual(len(done), 2)          # 2nd sighting 100 s later = Slack lag (skipped); 3rd = redo
+
+
+class BlogFromLinkEndToEnd(EndToEndTests):
+    """Sonia's Oct 17 request: a link to a SERP Dental post -> a new AscendPoint blog post, nobody pastes anything."""
+
+    def setUp(self):
+        super().setUp()
+        sys.path.insert(0, str(ROOT / "tests"))
+        import test_web_read as twr
+        twr.install_routes()
+        self.server = twr.Server().__enter__()
+        self.env2 = mock.patch.dict(os.environ, {"WEB_READ_ALLOW_PRIVATE": "1"})
+        self.env2.start()
+
+    def tearDown(self):
+        self.env2.stop()
+        self.server.__exit__()
+        super().tearDown()
+
+    def sonia(self, path="/blog/aw-2026/"):
+        url = self.server.base + path
+        m = msg(NOW - 10, user="USONIA", text=SONIA_TEXT.replace(UNFURL["from_url"], url),
+                attachments=[dict(UNFURL, from_url=url)])
+        return wr.build_request(FakeSlack([], users={"USONIA": "Sonia Hounsell"}), "C1", m, None, BOT)
+
+    def test_link_is_read_before_claude_and_the_post_ships(self):
+        prompt_out = self.tmp / "prompt.json"
+        script = (ROOT / "tests/fixtures/web/fake_claude_blog_post.py").read_text()
+        self.fake_claude(script.replace("PROMPT_OUT", str(prompt_out))
+                         .replace("RESULT_OUT", str(self.tmp / "result.json")))
+        files = self.repo / ".request-files"
+        with mock.patch.object(wr, "FILES_DIR", files):
+            reaction, text = wr.handle(self.sonia(), FakeSlack([]), "https://ascendpoint.agency")
+        self.assertEqual(reaction, "white_check_mark", text)
+        self.assertIn("/advertising-week-2026-lessons-healthcare-marketing/", text)
+        self.assertIn("Claude Opus", text)                                    # blog posts get the best model
+        args = json.loads(prompt_out.read_text())
+        prompt = args[args.index("-p") + 1]
+        self.assertIn("Web pages linked in the request", prompt)
+        self.assertIn("by Patrick Hounsell, Co-CEO", prompt)
+        self.assertIn("2 image(s) saved", prompt)
+        self.assertIn("Bash(python3 tools/web_read.py:*)", args[args.index("--allowedTools") + 1])
+        self.assertIn("NEVER ask the", args[args.index("--append-system-prompt") + 1])
+        committed = wr.sh("git", "show", "--name-only", "HEAD").stdout
+        self.assertIn("site/pages/advertising-week-2026-lessons-healthcare-marketing.html", committed)
+        self.assertNotIn(".request-files", committed)                         # the downloaded copy never ships
+        blog = (self.repo / "dist/blog/index.html").read_text()
+        self.assertIn("/advertising-week-2026-lessons-healthcare-marketing/", blog)   # listed on /blog/
+
+    def test_unreadable_link_is_explained_to_claude_with_slacks_preview(self):
+        prompt_out = self.tmp / "prompt.json"
+        self.fake_claude(f"""
+import json, pathlib, sys
+pathlib.Path('{prompt_out}').write_text(json.dumps(sys.argv[1:]))
+pathlib.Path('{self.tmp / "result.json"}').write_text(json.dumps({{"status": "question",
+  "question": "That page refused to open (403). Could you attach it as a PDF?"}}))
+""")
+        with mock.patch.object(wr, "FILES_DIR", self.repo / ".request-files"):
+            reaction, text = wr.handle(self.sonia("/secret/"), FakeSlack([]), "https://x")
+        self.assertEqual(reaction, "speech_balloon")
+        args = json.loads(prompt_out.read_text())
+        prompt = args[args.index("-p") + 1]
+        self.assertIn("COULD NOT be opened (the site refused (403))", prompt)
+        self.assertIn("Slack's preview of it: \"3 Lessons from Advertising Week", prompt)
 
 
 class HandoffTests(unittest.TestCase):

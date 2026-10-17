@@ -7,6 +7,7 @@ Runs in GitHub Actions (.github/workflows/website-requests.yml). A listener job 
     python3 tools/website_requests.py listen   # near-instant: poll every 10 s for ~5.7 h (default)
     python3 tools/website_requests.py next     # one-shot: find the oldest unhandled request -> request.json
     python3 tools/website_requests.py run request.json
+    python3 tools/website_requests.py redo <message ts> [<thread ts>]   # run one request again (handled or not)
 
 Front door: a message in #ascendpoint-website-requests (top-level = new request; reply in the thread =
 follow-up). Email requests were switched off on Oct 4: an email that still lands in the channel (Slack
@@ -31,7 +32,11 @@ Model per request: Haiku for short text-only edits, Sonnet for everyday edits, O
 pages (see choose_model); Haiku falls back to Sonnet, and Opus repairs anything that fails the checks.
 
 Attachments (photos, logos, screenshots) are downloaded into .request-files/ (git-ignored), checked and
-described to Claude; follow-ups also get the photos posted earlier in the thread. tools/img_for_web.py swaps
+described to Claude; follow-ups also get the photos posted earlier in the thread.
+Links (a blog post to repurpose, a page to copy from, a Google Doc) are opened BEFORE Claude starts: every
+web address in the request, its thread and Slack's link previews is read by tools/web_read.py into
+.request-files/web/<page>/ (page.md = the article as Markdown, img-NN = its images), and Claude may read more
+pages itself with `python3 tools/web_read.py <url>`. Nobody has to paste an article's text into Slack. tools/img_for_web.py swaps
 or adds images (new file names so caches never show the old picture; face-aware crops for headshots).
 
 State lives in Slack reactions: a message the bot has reacted to is never picked up again.
@@ -114,6 +119,39 @@ def handoff_from(msg: dict, bot_user: str) -> tuple[str, str | None] | None:
 def handoff_body(text: str) -> str:
     head, _, body = (text or "").partition("\n")
     return body.strip() if HANDOFF_RE.match(head) and body.strip() else (text or "")
+# Web addresses in a Slack message: <https://x|label>, <https://x>, or (in email/hand-off text) bare https://x.
+SLACK_LINK_RE = re.compile(r"<(https?://[^|>\s]+)(?:\|[^>]*)?>")
+BARE_LINK_RE = re.compile(r"(?<![<|(\[])\bhttps?://[^\s<>|\]\)\"']+")
+SKIP_LINK_RE = re.compile(r"^https?://([a-z0-9-]+\.)*(slack\.com|slack-edge\.com|slack-files\.com)/", re.I)
+MAX_LINKS = 6
+
+
+def find_links(*texts: str) -> list[str]:
+    """Every web page address in these Slack texts, in order, without duplicates or Slack's own links."""
+    out: list[str] = []
+    for t in texts:
+        t = t or ""
+        found = [m.group(1) for m in SLACK_LINK_RE.finditer(t)]
+        found += BARE_LINK_RE.findall(SLACK_LINK_RE.sub(" ", t))
+        for u in found:
+            u = u.replace("&amp;", "&").rstrip(".,;:!?")
+            if SKIP_LINK_RE.match(u):
+                continue
+            key = u.rstrip("/")
+            if key not in {x.rstrip("/") for x in out}:
+                out.append(u)
+    return out
+
+
+def unfurls(msg: dict) -> list[dict]:
+    """Slack's link previews on a message (title, text, image), used when a page can't be opened."""
+    out = []
+    for a in msg.get("attachments") or []:
+        url = a.get("from_url") or a.get("original_url") or a.get("title_link")
+        if url and not SKIP_LINK_RE.match(url):
+            out.append({"url": url, "title": a.get("title") or "", "text": (a.get("text") or "")[:600],
+                        "site": a.get("service_name") or "", "image": a.get("image_url") or a.get("thumb_url") or ""})
+    return out
 RESULT = Path("/tmp/website_request_result.json")
 # Files attached in Slack (photos, logos, screenshots) are downloaded INSIDE the repo (git-ignored) so the
 # headless Claude can open them: tools outside its working folder are refused in dontAsk mode.
@@ -133,6 +171,8 @@ ADVANCED_RE = re.compile(
     r"\b(animat\w*|motion|movement|moving|scroll\w*|parallax|fade[- ]?in|slide[- ]?in|carousel|slider|"
     r"marquee|ticker|hover (effect|state|animation)s?|interactive|javascript|redesign|re-design|"
     r"new page|(create|build|design) (a |an )?(new )?(page|section|layout)|add (a |an )?(new )?section|"
+    r"blog ?posts?|(create|write|make|add|build|publish|draft) (a |an |this |that |the )?(new )?(article|post)|"
+    r"(re)?post (this|it|that)( \w+)? (on|to) (the |our )?(blog|site|website)|repurpose|"
     r"landing page|layout|form|video|count(er|[- ]up)|typewriter|3d|sticky|modal|pop-?up|accordion|"
     r"mega ?menu|dark mode|make it (pop|feel|look) (more )?(modern|premium|dynamic|alive)|"
     r"looks? (bad|off|cluttered|messy|dated|busy|weird)|clean(er)? (look|design)|look(s)? cleaner)\b", re.I)
@@ -169,7 +209,7 @@ def choose_model(req: dict) -> tuple[str, str]:
             return advanced, "advanced"
     if any(ADVANCED_RE.search(t) for t in texts):
         return advanced, "advanced"
-    if (req.get("kind") == "new" and not req.get("files") and len(text) <= SIMPLE_MAX_CHARS
+    if (req.get("kind") == "new" and not req.get("files") and not req.get("links") and len(text) <= SIMPLE_MAX_CHARS
             and SIMPLE_RE.search(text)):
         return simple, "simple"
     return basic, "standard"
@@ -318,6 +358,21 @@ def find_next(slack: Slack, channel: str, now: float | None = None,
     return build_request(slack, channel, msg, thread, bot_user)
 
 
+def fetch_request(slack: Slack, channel: str, ts: str, thread_ts: str | None = None) -> dict | None:
+    """Rebuild the request for one message by its timestamp, handled or not (the "Website request: redo"
+    workflow uses this to run a request again after the robot learned something new)."""
+    bot_user = slack.call("auth.test")["user_id"]
+    if thread_ts and thread_ts != ts:
+        thread = slack.call("conversations.replies", channel=channel, ts=thread_ts, limit=200).get("messages", [])
+        msg = next((m for m in thread if m.get("ts") == ts), None)
+        if msg:
+            msg.setdefault("thread_ts", thread_ts)
+        return build_request(slack, channel, msg, thread, bot_user) if msg else None
+    hist = slack.call("conversations.history", channel=channel, latest=ts, oldest=ts, inclusive="true", limit=1)
+    msg = next((m for m in hist.get("messages", []) if m.get("ts") == ts), None)
+    return build_request(slack, channel, msg, None, bot_user) if msg else None
+
+
 def user_name(slack: Slack, uid: str | None) -> str:
     if not uid:
         return "email"
@@ -389,6 +444,13 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
             requester = (m.group(1).strip() if m else "email") + " (email)"
             a = re.search(r"<([^<>@\s]+@[^<>\s]+)>", m.group(1) if m else "")
             sender = a.group(1).lower() if a else None
+    previews = unfurls(msg)
+    for t in (thread or []):
+        if float(t["ts"]) < float(msg["ts"]) and t.get("user") != bot_user:
+            previews += [u for u in unfurls(t) if u["url"] not in {p["url"] for p in previews}]
+    earlier = [t.get("text", "") for t in (thread or []) if float(t["ts"]) < float(msg["ts"])
+               and t.get("user") != bot_user]
+    links = find_links(text, *reversed(earlier), *[p["url"] for p in previews])[:MAX_LINKS]
     kind = ("undo" if UNDO_RE.match(text or "") and thread_ts != msg["ts"] else
             ("followup" if thread_ts != msg["ts"] else "new"))
     if requester.endswith("(email)"):
@@ -396,7 +458,7 @@ def build_request(slack: Slack, channel: str, msg: dict, thread: list | None, bo
     return {
         "channel": channel, "ts": msg["ts"], "thread_ts": thread_ts,
         "user": msg.get("user"), "requester": requester, "sender": sender, "text": text,
-        "files": files, "kind": kind, "context": context,
+        "files": files, "kind": kind, "context": context, "links": links, "previews": previews,
     }
 
 
@@ -488,6 +550,39 @@ Rules:
   use an image. After any image change, screenshot the page and LOOK: if a head is cut off or off-centre,
   redo it with `--focus X,Y` (0-1 shares of the photo's width/height).
 - Screenshots of the site are reference for what to change, unless the request says to put the image up.
+- LINKS: before you start, the robot has already opened every web address in the request and its thread (and
+  Slack's link previews) and saved each page in {files_dir}/web/<page>/: page.md (the whole article as text:
+  title, author, date, headings, lists, quotes, tables, FAQ, source links, and where each image is) plus the
+  page's images as img-01.webp, img-02.jpg ... The request lists them. Read page.md and USE it. NEVER ask the
+  requester to paste an article's text or re-attach images from a link that was read. To open any other page
+  (a source the article cites, a link in a document), run `python3 tools/web_read.py <url>`: it saves the page
+  the same way. Only when a link could NOT be opened (the request says why) ask one short question for what's
+  missing, naming the link and the reason.
+- BLOG POSTS / ARTICLES ("create a blog post from this", "post this article on our site", "use this content"):
+  1. A post is ONE new file site/pages/<slug>.html. Copy the structure, front matter and HTML patterns of the
+     newest existing post (type: post; see site/pages/what-is-local-seo-your-complete-guide-to-dominating-your-local-market.html):
+     title (<= 60 chars), description (120-160 chars), image: /img/og/<slug>.jpg, type: post, date (today unless
+     asked otherwise), author, name (the full headline), list_title, list_date ("Oct 17, 2026 · Author Name"),
+     list_image, list_image_alt, list_summary (one sentence). It then appears on /blog/, in the RSS feed, sitemap
+     and llms.txt by itself. Slug: short, keyword-first, lowercase-hyphenated, no dates unless they matter.
+  2. Images: never hot-link another site. Make them from the saved files:
+     featured `python3 tools/img_for_web.py {files_dir}/web/<page>/img-NN.ext site/img/<slug>.webp --width 1600`,
+     share card `python3 tools/img_for_web.py {files_dir}/web/<page>/img-NN.ext site/img/og/<slug>.jpg --size 1200x630`,
+     in-article `... site/img/<slug>-<topic>.webp --width 1200` in <figure><img ...><figcaption>..</figcaption></figure>
+     with real alt text. Use the page's share image for the share card when it has one.
+  3. Text: keep every heading, fact, number, quote, FAQ and source link of the original; never add facts or
+     statistics. Our own brands' content (serpdental.com, medicalmarketingwhiz.com, ascendpoint.agency): adapt it
+     lightly for AscendPoint's readers (dental AND medical practices; AscendPoint is the parent company of SERP
+     Dental and Medical Marketing Whiz), keep the author's name and voice, and end the article with
+     "<p><em>Originally published on the <a href="ORIGINAL URL">BRAND blog</a>.</em></p>". Someone else's article:
+     do not copy it; write an original summary with short quotes, credited and linked.
+  4. Keep the existing post layout: hero (crumbs, kicker, h1, byline), figure.article-feature, article.article,
+     article-foot, "Keep reading" with the 3 newest OTHER posts, CTA band. FAQ as h2 + h3/p pairs.
+  5. Decide reasonable defaults yourself (title, slug, author, date, images, blog listing) instead of asking, and
+     say what you chose in the summary so they can tweak it with a reply.
+  6. Build, then screenshot the new post and /blog/ (desktop + mobile) and LOOK at them before you finish.
+- Ask a question only when you truly cannot do the request well; when a sensible default exists, use it and
+  mention it in the summary.
 - When renaming or removing a page, add a 301 in site/_redirects so the old URL keeps working.
 - After editing, run `python3 tools/build.py` and fix every error it reports until it exits 0.
 - For anything visual (layout, styling, images, motion), LOOK at your work: after building, run
@@ -582,6 +677,66 @@ def prepare_files(req: dict, slack: Slack) -> list[str]:
     return out
 
 
+def rel(path) -> str:
+    """A path as Claude should write it: relative to the repo when it's inside it."""
+    try:
+        return Path(path).resolve().relative_to(Path(ROOT).resolve()).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def prepare_links(req: dict) -> list[str]:
+    """Open every link in the request (tools/web_read.py) into .request-files/web/ and describe each for Claude.
+    Never fails the request: a page that can't be read is described with the reason (and Slack's preview)."""
+    links = req.get("links") or []
+    if not links:
+        return []
+    web_dir = FILES_DIR / "web"                      # pages land next to the attachments Claude may open
+    web_dir.mkdir(parents=True, exist_ok=True)
+    r = sh(sys.executable, "tools/web_read.py", *links, "--out", str(web_dir), check=False, timeout=6 * 60)
+    results = {}
+    for line in (r.stdout or "").splitlines():
+        try:
+            d = json.loads(line)
+            results[d["url"]] = d
+        except Exception:
+            continue
+    previews = {p["url"].rstrip("/"): p for p in req.get("previews") or []}
+    out = []
+    for url in links:
+        d = results.get(url) or {"ok": False, "error": (r.stdout or "no output")[-200:]}
+        if d.get("ok"):
+            bits = [f"read: {rel(d['md'])}", f"\"{d.get('title') or ''}\"", f"{d.get('words', 0):,} words"]
+            if d.get("author"):
+                bits.append(f"by {d['author']}")
+            if d.get("published"):
+                bits.append(f"published {str(d['published'])[:10]}")
+            if d.get("images"):
+                bits.append(f"{len(d['images'])} image(s) saved next to it")
+            if d.get("pdf"):
+                bits.append(f"PDF saved as {rel(d['dir'])}/{d['pdf']}")
+            if d.get("warning"):
+                bits.append(d["warning"])
+            out.append(f"{url} -> " + ", ".join(bits))
+        else:
+            p = previews.get(url.rstrip("/"))
+            line = f"{url} -> COULD NOT be opened ({d.get('error')})"
+            if p and (p.get("title") or p.get("text")):
+                line += f"; Slack's preview of it: \"{p.get('title')}\" {p.get('text')}"
+            out.append(line)
+    return out
+
+
+def today() -> str:
+    """Today's date where the team is (the runner's clock is UTC: 8 PM in Austin is already tomorrow there)."""
+    try:
+        from zoneinfo import ZoneInfo
+        import datetime as _dt
+        return _dt.datetime.now(ZoneInfo("America/Chicago")).strftime("%Y-%m-%d (%A)")
+    except Exception:
+        return time.strftime("%Y-%m-%d (%A)")
+
+
 def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
                fix_log: str | None = None, preview: bool = False) -> dict:
     FILES_DIR.mkdir(parents=True, exist_ok=True)
@@ -596,6 +751,9 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
         + (f"\nEarlier messages in this Slack thread (oldest first):\n<<<\n{thread}\n>>>\n" if thread else "")
         + (f"\nAttached files, in {files_rel()}/:\n" + "\n".join(f"- {a}" for a in attached) + "\n"
            if attached else "")
+        + (f"\nWeb pages linked in the request (already opened and saved for you; Read page.md, use the saved "
+           f"images):\n" + "\n".join(f"- {x}" for x in req.get("web") or []) + "\n" if req.get("web") else "")
+        + f"\nToday is {today()} (US Central time)."
         + "\nDo what the request asks, following the rules."
         + ("\nThis change will be shown to the requester as a PREVIEW (a link to a separate preview copy of "
            "the site); nothing goes live until they approve it. So just make the change; never say you "
@@ -615,6 +773,7 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
         "Bash(python3 tools/build.py)", "Bash(python3 tools/build.py:*)",
         "Bash(python3 tools/img_for_web.py:*)", "Bash(python3 ./tools/img_for_web.py:*)",
         "Bash(python3 tools/screenshot.py:*)", "Bash(python3 ./tools/screenshot.py:*)", "Bash(ls:*)",
+        "Bash(python3 tools/web_read.py:*)", "Bash(python3 ./tools/web_read.py:*)",
     ])
     cmd = ["claude", "-p", prompt,
            "--append-system-prompt", CLAUDE_RULES.format(files_dir=files_rel(), result=RESULT),
@@ -940,6 +1099,7 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
                            f"{f'<@{owner}> ' if owner else ''}has been flagged; once it's fixed, reply *retry* "
                            f"here (or post the file again).\n`{str(e)[:300]}`")
 
+    req["web"] = prepare_links(req)
     model, tier = choose_model(req)
     result = run_claude(req, model, budget(tier), preview=preview)
     spent = [result.get("cost_usd")]
@@ -1090,7 +1250,7 @@ def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
     my_code = me.read_bytes()
     last_pull = clock()
     cache: dict = {}
-    seen: set[str] = set()
+    seen: dict[str, float] = {}     # ts -> when handled (a redo/requeue later is allowed again)
     handled = 0
     while clock() < end:
         try:
@@ -1098,10 +1258,10 @@ def listen(slack: Slack, channel: str, live: str, minutes: float, poll: float,
         except Exception as e:      # Slack hiccup: wait and try again
             print("poll error", e, file=sys.stderr, flush=True)
             req = None
-        if req and req["ts"] in seen:   # Slack hasn't caught up with our reaction yet
+        if req and clock() - seen.get(req["ts"], -1e9) < 180:   # Slack hasn't caught up with our reaction yet
             req = None
         if req:
-            seen.add(req["ts"])
+            seen[req["ts"]] = clock()
             print(f"picked {req['kind']} request {req['ts']} from {req['requester']}", flush=True)
             claim(slack, channel, req)
             finish(slack, req, live)
@@ -1149,6 +1309,15 @@ def main(argv: list[str]) -> int:
 
     if argv[:1] == ["run"]:
         req = json.loads(Path(argv[1]).read_text())
+        return 0 if finish(slack, req, live) != "warning" else 1
+
+    if argv[:1] == ["redo"] and len(argv) > 1:
+        req = fetch_request(slack, channel, argv[1], argv[2] if len(argv) > 2 else None)
+        if not req:
+            print(f"message {argv[1]} not found in {channel}")
+            return 1
+        print(f"redoing {req['kind']} request {req['ts']} from {req['requester']}", flush=True)
+        claim(slack, channel, req)
         return 0 if finish(slack, req, live) != "warning" else 1
 
     if argv[:1] == ["listen"]:

@@ -49,6 +49,32 @@ If Slack won't hand over the file (e.g. the app lost `files:read`), it says so w
 owner instead of guessing. If Claude is ever blocked from a step, the 💬 reply names the blocked step for
 the owner. By hand: `python3 tools/img_for_web.py --help`.
 
+**Links: just paste them.** "Create a blog post from <link>", "use the text on this page", "copy the FAQ from
+<Google Doc link>": the robot opens every link in the message, in earlier messages of the thread and in Slack's
+link preview *before* Claude starts (`tools/web_read.py`, run on GitHub's servers, so no one's computer is
+involved). Each page is saved in the git-ignored `.request-files/web/<page>/` as `page.md` (the article as
+Markdown: title, author, date, headings, lists, quotes, tables, FAQ, source links) plus its images
+(`img-01.webp`, ...; the largest version, ready for `tools/img_for_web.py`; another site's images are never
+hot-linked). Claude can open further pages itself with `python3 tools/web_read.py <url>`. It finds the article
+on page builders with no `<article>` tag (Oxygen, Elementor, WordPress blocks), drops cookie banners, menus,
+sidebars, share buttons and footers, opens JavaScript-only pages in headless Chromium, reads Google
+Docs/Sheets/Slides shared "anyone with the link", PDFs, images and text files, and refuses private/internal
+addresses. A link that can't be opened (login, 403) is described to Claude with the reason and Slack's preview,
+so the 💬 question names exactly what's missing. By hand: `python3 tools/web_read.py --help`.
+
+**Blog posts from a link (or a file).** "Create a blog post for the AscendPoint site that uses this content:
+<link>" makes one new page `site/pages/<slug>.html` (type `post`, same layout as the existing posts), web-ready
+featured and share images from the article's own images, the original headings/facts/FAQ/sources kept, the
+author kept, and an "Originally published on the SERP Dental blog" credit link for our own brands' content. It
+appears on /blog/, the RSS feed, the sitemap and llms.txt automatically. The robot picks sensible defaults
+(title, slug, author, today's date) and says what it chose; reply in the thread to change any of it. Blog and
+article requests use Claude Opus.
+
+**Run an old request again.** Actions → "Website request: redo" → Run workflow → the message's timestamp (the
+digits at the end of its Slack link, `p1792240000123456` → `1792240000.123456`; for a reply in a thread also the
+thread's timestamp). The robot claims it 👀 and answers in that thread like a new request. Or simply reply
+**retry** in the thread.
+
 **Three models, picked per request (cheapest that does the job well).** Short text-only edits (a typo, a
 phone number, a date, a one-line wording swap) use Claude Haiku: a fraction of Sonnet's cost. Everyday edits
 (text, links, photos, removing things) use Claude Sonnet: fast and cheap (typically 20-60 s of work,
@@ -77,7 +103,7 @@ How it works: `.github/workflows/website-requests.yml` keeps one listener runnin
 (polls Slack every 10 s for ~5.7 h, then starts its successor; the 15-minute cron is a backup; free on a public repo; no one's
 computer needs to be on). `tools/website_requests.py` does the work: Claude Code in
 headless mode with a tight tool allowlist (edit `site/` only, run the build, the image tool and the
-screenshot tool; no git, no web, no other shell; Slack attachments are downloaded into the git-ignored
+screenshot tool; no git, no other shell, web pages only through `tools/web_read.py`; Slack attachments are downloaded into the git-ignored
 `.request-files/`), packages from `tools/requirements-robot.txt`,
 a $3 cap per request, then the normal checks, a commit to `main` by "AscendPoint AI" with
 `Requested-by` / `Slack-Thread` trailers (so undo finds it), the deploy workflow, and a live check of
