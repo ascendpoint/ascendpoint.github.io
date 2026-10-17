@@ -31,7 +31,11 @@ What happens (about 3 to 6 minutes, fully automatic; pickup within ~10 seconds):
 5. If something's unclear, missing (prices, dates, quotes, names are never made up) or risky
    (deleting pages, legal text), it replies 💬 with a question instead. Answer in the thread.
 
-Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way).
+Messages starting with `//`, `note:` or `fyi` are ignored (chat freely that way). A reply in a robot thread that @mentions a
+teammate but not the robot ("troubleshooting this @Sonia") is people talking, not an instruction: it is
+ignored too (@mention the robot, or reply without @mentioning anyone, to give it an instruction). Before the ✅
+reply, the robot opens every link it is about to post and waits (up to 3 minutes) until each one really
+loads, so nobody clicks a fresh "not found".
 
 **Photos (headshots, logos, pictures): just attach them in Slack.** Drag the photo into the message, e.g.
 "Update Tyler's headshot in the team section with this photo", or post a photo with no words in a thread to
@@ -59,7 +63,8 @@ hot-linked). Claude can open further pages itself with `python3 tools/web_read.p
 on page builders with no `<article>` tag (Oxygen, Elementor, WordPress blocks), drops cookie banners, menus,
 sidebars, share buttons and footers, opens JavaScript-only pages in headless Chromium, reads Google
 Docs/Sheets/Slides shared "anyone with the link", PDFs, images and text files, and refuses private/internal
-addresses. A link that can't be opened (login, 403) is described to Claude with the reason and Slack's preview,
+addresses. Pictures that are not in the article text (hero/background images, preloaded images) are saved
+too and labelled as such, for requests like "use the hero image from serpdental.com". A link that can't be opened (login, 403) is described to Claude with the reason and Slack's preview,
 so the 💬 question names exactly what's missing. By hand: `python3 tools/web_read.py --help`.
 
 **Blog posts from a link (or a file).** "Create a blog post for the AscendPoint site that uses this content:
