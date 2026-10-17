@@ -1,0 +1,66 @@
+name: "Website request: redo"
+
+# Runs ONE Slack request from #ascendpoint-website-requests again, even though the robot already answered it
+# (e.g. it asked a question it no longer needs to ask, after the robot learned to read links).
+# Actions -> "Website request: redo" -> Run workflow -> paste the message timestamp (the number at the end of
+# the message's Slack link, p1792240000123456 -> 1792240000.123456). For a reply inside a thread also give the
+# thread's timestamp. The robot claims it (👀), does it, and replies in that thread like any other request.
+
+on:
+  workflow_dispatch:
+    inputs:
+      ts:
+        description: "Message timestamp, e.g. 1792240000.123456"
+        required: true
+      thread_ts:
+        description: "Thread timestamp (only when the message is a reply inside a thread)"
+        required: false
+        default: ""
+
+permissions:
+  contents: write
+  actions: write
+
+concurrency:
+  group: website-redo
+  cancel-in-progress: false
+
+jobs:
+  redo:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    env:
+      SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_TOKEN }}
+      ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+      SLACK_CHANNEL_ID: ${{ vars.SLACK_CHANNEL_ID }}
+      WEBSITE_REQUESTS_OWNER: ${{ vars.WEBSITE_REQUESTS_OWNER }}
+      ANTHROPIC_WORKSPACE_ID: ${{ vars.ANTHROPIC_WORKSPACE_ID }}
+      CLAUDE_MODEL: ${{ vars.CLAUDE_MODEL }}
+      CLAUDE_MAX_USD: ${{ vars.CLAUDE_MAX_USD }}
+      CLAUDE_MODEL_ADVANCED: ${{ vars.CLAUDE_MODEL_ADVANCED }}
+      CLAUDE_MAX_USD_ADVANCED: ${{ vars.CLAUDE_MAX_USD_ADVANCED }}
+      CLAUDE_MODEL_SIMPLE: ${{ vars.CLAUDE_MODEL_SIMPLE }}
+      CLAUDE_MAX_USD_SIMPLE: ${{ vars.CLAUDE_MAX_USD_SIMPLE }}
+      PREVIEW_URL: ${{ vars.PREVIEW_URL }}
+      LIVE_URL: ${{ vars.LIVE_URL }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - name: Install tools
+        run: |
+          pip install -r tools/requirements-robot.txt
+          python -m playwright install --with-deps chromium
+          npm install -g @anthropic-ai/claude-code
+      - name: Redo the request
+        env:
+          REDO_TS: ${{ inputs.ts }}
+          REDO_THREAD_TS: ${{ inputs.thread_ts }}
+        run: python3 tools/website_requests.py redo "$REDO_TS" "$REDO_THREAD_TS"
