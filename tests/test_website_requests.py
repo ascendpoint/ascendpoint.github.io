@@ -353,6 +353,38 @@ class WaitLiveTests(unittest.TestCase):
         self.assertFalse(ok)
 
 
+class PagesOpenTests(unittest.TestCase):
+    """Before replying "Live", every link in the reply must really open (no brief 404 for a new page)."""
+
+    def test_waits_for_a_new_page_then_reports_only_what_still_fails(self):
+        seen, clock = [], {"t": 0.0}
+
+        class Resp:
+            def __init__(self, status):
+                self.status = status
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                pass
+
+        def opener(req, timeout=0):
+            seen.append(req.full_url)
+            if "/new-post/" in req.full_url and clock["t"] < 10:
+                raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+            if "/broken/" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+            return Resp(200)
+
+        left = wr.pages_open(["/new-post/", "/blog/", "/broken/"], "https://x.agency", "abc1234", timeout=30,
+                             poll=5, opener=opener, sleep=lambda s: clock.__setitem__("t", clock["t"] + s),
+                             clock=lambda: clock["t"])
+        self.assertEqual(left, ["/broken/"])
+        self.assertIn("https://x.agency/new-post/?v=abc1234", seen)           # the exact link the reply shows
+        self.assertEqual(seen.count("https://x.agency/blog/?v=abc1234"), 1)    # a page that opens isn't re-asked
+
+
 class ModelRoutingTests(unittest.TestCase):
     def pick(self, text, context=None, env=None):
         with mock.patch.dict(os.environ, env or {}, clear=False):
@@ -465,6 +497,7 @@ class EndToEndTests(unittest.TestCase):
                         mock.patch.object(wr, "RESULT", self.tmp / "result.json"),
                         mock.patch.object(wr, "FILES_DIR", self.tmp / "files"),
                         mock.patch.object(wr, "wait_live", lambda sha, live, timeout=0: True),
+                        mock.patch.object(wr, "pages_open", lambda pages, live, version, **k: []),
                         mock.patch.dict(os.environ, {"PATH": f"{self.bin}:{os.environ['PATH']}",
                                                      "ANTHROPIC_API_KEY": "test"})]
         for p in self.patches:
@@ -798,6 +831,18 @@ class LinkTests(unittest.TestCase):
         self.assertEqual(req["kind"], "followup")
         self.assertEqual(req["links"], [UNFURL["from_url"]])            # not the bot's own link
 
+    def test_teammates_talking_in_a_robot_thread_is_not_a_request(self):
+        top = msg(NOW - 100, user="USONIA", text=SONIA_TEXT, reply_count=3, latest_reply=f"{NOW - 10:.6f}",
+                  reactions=[{"name": "speech_balloon", "users": [BOT]}])
+        bot = msg(NOW - 90, user=BOT, text="💬 question", thread_ts=top["ts"])
+        chat = msg(NOW - 20, user="UKYLE", text="troubleshooting this <@USONIA>", thread_ts=top["ts"])
+        self.assertIsNone(wr.find_next(FakeSlack([top], replies={top["ts"]: [top, bot, chat]}), "C1", now=NOW))
+        both = msg(NOW - 10, user="UKYLE", text="<@UBOT> retry please <@USONIA>", thread_ts=top["ts"])
+        req = wr.find_next(FakeSlack([top], replies={top["ts"]: [top, bot, chat, both]}), "C1", now=NOW)
+        self.assertEqual(req["ts"], both["ts"])
+        plain = msg(NOW - 5, user="UKYLE", text="retry", thread_ts=top["ts"])
+        self.assertFalse(wr.talking_to_someone_else(plain, BOT))
+
     def test_redo_rebuilds_any_message_by_timestamp(self):
         top = msg(NOW - 100, user="USONIA", text=SONIA_TEXT,
                   reactions=[{"name": "speech_balloon", "users": [BOT]}])        # already answered
@@ -873,7 +918,7 @@ class BlogFromLinkEndToEnd(EndToEndTests):
         prompt = args[args.index("-p") + 1]
         self.assertIn("Web pages linked in the request", prompt)
         self.assertIn("by Patrick Hounsell, Co-CEO", prompt)
-        self.assertIn("2 image(s) saved", prompt)
+        self.assertIn("3 image(s) saved", prompt)
         self.assertIn("Bash(python3 tools/web_read.py:*)", args[args.index("--allowedTools") + 1])
         self.assertIn("NEVER ask the", args[args.index("--append-system-prompt") + 1])
         committed = wr.sh("git", "show", "--name-only", "HEAD").stdout

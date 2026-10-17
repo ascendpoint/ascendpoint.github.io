@@ -98,6 +98,7 @@ class PreviewFlowTests(unittest.TestCase):
             mock.patch.object(wr, "ROOT", self.work),
             mock.patch.object(wr, "sh", side_effect=sh),
             mock.patch.object(wr, "wait_live", return_value=True),
+            mock.patch.object(wr, "pages_open", return_value=[]),
             mock.patch.object(wr, "GIT_USER", ("-c", "user.name=t", "-c", "user.email=t@t")),
             mock.patch.object(wr, "checks", side_effect=self.fake_checks),
             mock.patch.dict(os.environ, {"PREVIEW_URL": PREVIEW_URL, "WEBSITE_REQUESTS_OWNER": "UOWN",

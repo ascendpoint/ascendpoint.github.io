@@ -384,8 +384,11 @@ class Markdown:
             return ""
         for dim in ("width", "height"):
             v = re.sub(r"\D", "", n.get(dim))
-            if v and int(v) < 40:
+            if v and int(v) < 50:
                 return ""                     # icons, tracking pixels
+        if re.search(r"(^|[/_. -])(logo|icon|favicon|avatar|badge)s?([/_. -]|$)",
+                     f"{src.rsplit('/', 1)[-1]} {n.get('class')} {n.get('alt')}", re.I):
+            return ""                         # site logos and icons are not article pictures
         alt = re.sub(r"\s+", " ", n.get("alt")).strip()
         if not any(i["url"] == src for i in self.images):
             self.images.append({"url": src, "alt": alt})
@@ -542,13 +545,51 @@ def words(text: str) -> int:
 
 
 # ----------------------------------------------------------------------------- whole pages
+BG_RE = re.compile(r"background(?:-image)?\s*:[^;\"']*url\(\s*['\"]?([^'\")]+)['\"]?\s*\)", re.I)
+MAX_PAGE_IMAGES = 6
+
+
+def page_images(root: Node, base: str, skip: set[str]) -> list[dict]:
+    """Pictures on the page outside the article text: hero/background images (inline CSS), preloaded
+    images and other <img>s. "Use the hero image from serpdental.com" needs these."""
+    out, seen = [], set(skip)
+
+    def add(src, alt, where):
+        if not src or src.startswith("data:"):
+            return
+        src = urllib.parse.urljoin(base, htmllib.unescape(src.strip()))
+        if src in seen or re.search(r"\.svg(\?|$)|favicon|sprite|pixel|spacer|gravatar", src, re.I):
+            return
+        seen.add(src)
+        out.append({"url": src, "alt": alt, "page_image": where})
+
+    for l in root.iter("link"):
+        if "preload" in l.get("rel").lower() and l.get("as") == "image":
+            add(l.get("href") or l.get("imagesrcset").split(" ")[0], "", "preloaded (usually the hero)")
+    for n in root.iter():
+        m = BG_RE.search(n.get("style"))
+        if m:
+            add(m.group(1), "", "background image")
+    for s in root.iter("style"):
+        for m in BG_RE.finditer("".join(c for c in s.children if isinstance(c, str))):
+            add(m.group(1), "", "background image (stylesheet)")
+    for img in root.iter("img"):
+        dims = [re.sub(r"\D", "", img.get(d)) for d in ("width", "height")]
+        if any(d and int(d) < 120 for d in dims):
+            continue                                   # icons, logos in the header
+        add(_img_src(img, base), re.sub(r"\s+", " ", img.get("alt")).strip(), "on the page")
+    return out[:MAX_PAGE_IMAGES]
+
+
 def read_html(html: str, url: str) -> dict:
     root = parse(html)
     meta = metadata(root, url)
     content = find_content(root)
     body, images, links = to_markdown(content, url)
+    extra = page_images(root, url, {i["url"] for i in images} | {meta.get("image") or ""})
     # the page's H1 often sits outside the article block (a hero): keep the title at the top either way
-    return {"meta": meta, "markdown": body, "images": images, "links": links, "words": words(body)}
+    return {"meta": meta, "markdown": body, "images": images, "page_images": extra, "links": links,
+            "words": words(body)}
 
 
 def render_with_browser(url: str) -> str | None:
@@ -700,6 +741,7 @@ def read_url(url: str, out: Path, max_images: int = 12, render: str = "auto") ->
             for i in images:
                 if i["url"] == meta.get("image"):
                     i["share_image"] = True
+        images += page.get("page_images") or []          # hero/background pictures after the article's own
         saved = save_images(images, folder, max_images) if max_images else []
         body = page["markdown"]
         first, _, rest = body.partition("\n")
@@ -714,7 +756,8 @@ def read_url(url: str, out: Path, max_images: int = 12, render: str = "auto") ->
             for s in saved:
                 if s.get("file"):
                     size = f" {s['width']}x{s['height']}" if s.get("width") else ""
-                    tag = " [share image]" if s.get("share_image") else ""
+                    tag = (" [share image]" if s.get("share_image") else
+                           f" [{s['page_image']}, not in the article]" if s.get("page_image") else "")
                     lines.append(f"- {s['file']}{size}{tag} alt: \"{s.get('alt', '')}\" from {s['url']}")
                 else:
                     lines.append(f"- (not saved: {s.get('error')}) {s['url']}")
