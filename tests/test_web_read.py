@@ -80,6 +80,7 @@ def install_routes():
         "/notes.txt": (200, "text/plain", b"Plain notes for the robot.", None),
         "/wp-content/uploads/2026/10/aw-share.jpg": (200, "image/jpeg", image_bytes((1200, 630), "JPEG"), None),
         "/wp-content/uploads/2026/10/aw-hero-1536x1024.webp": (200, "image/webp", image_bytes(), None),
+        "/wp-content/uploads/2026/10/hero-bg.webp": (200, "image/webp", image_bytes((1920, 900)), None),
     }
 
 
@@ -111,6 +112,9 @@ class ExtractionTests(unittest.TestCase):
         self.assertEqual([i["url"] for i in r["images"]],
                          ["https://serpdental.com/wp-content/uploads/2026/10/aw-hero-1536x1024.webp"])
         self.assertGreater(r["words"], 200)
+        # the hero background (not part of the article) is offered separately; logos and pixels are not
+        self.assertEqual([(i["url"], i["page_image"]) for i in r["page_images"]],
+                         [("https://serpdental.com/wp-content/uploads/2026/10/hero-bg.webp", "preloaded (usually the hero)")])
 
     def test_old_html_with_unclosed_paragraphs(self):
         r = self.read("article-post.html", "https://clinic.example/blog/reviews/")
@@ -170,7 +174,7 @@ class ReadUrlTests(unittest.TestCase):
             r = w.read_url(s.base + "/blog/aw-2026/", self.out, render="never")
         self.assertTrue(r["ok"], r)
         self.assertEqual(r["author"], "Patrick Hounsell, Co-CEO")
-        self.assertEqual(r["images"], ["img-01.jpg", "img-02.webp"])          # share image first, then the article's
+        self.assertEqual(r["images"], ["img-01.jpg", "img-02.webp", "img-03.webp"])   # share, article, hero
         folder = Path(r["dir"])
         md = (folder / "page.md").read_text()
         self.assertTrue(md.startswith("# 3 Lessons from Advertising Week 2026 for Dental and Medical Marketing\n"))
@@ -180,9 +184,10 @@ class ReadUrlTests(unittest.TestCase):
         self.assertIn("_(saved as img-02.webp)_", md)                            # inline image -> local copy
         self.assertIn("- img-01.jpg 1200x630 [share image]", md)
         self.assertIn("- img-02.webp 1536x1024 alt: \"Advertising Week 2026 stage in New York\"", md)
+        self.assertIn("- img-03.webp 1920x900 [preloaded (usually the hero), not in the article]", md)
         meta = json.loads((folder / "meta.json").read_text())
         self.assertEqual(meta["published"], "2026-10-09")
-        self.assertEqual(len(meta["images"]), 2)
+        self.assertEqual(len(meta["images"]), 3)
         from PIL import Image
         with Image.open(folder / "img-02.webp") as im:
             self.assertEqual(im.size, (1536, 1024))
