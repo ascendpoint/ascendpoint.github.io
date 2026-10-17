@@ -369,6 +369,9 @@ a.post:hover .thumb img{transform:scale(1.04)}
 .article .inline-photo img{display:block;width:100%;height:auto;border-radius:12px;background:var(--tint,#eef3f7)}
 .article .inline-photo.mid img{aspect-ratio:4/5;object-fit:cover;object-position:50% 35%}
 .article .inline-photo figcaption{margin-top:8px;font:600 13px/1.4 var(--display);color:var(--muted)}
+.article .article-figure{margin:1.4em 0}
+.article .article-figure img{display:block;width:100%;height:auto;border-radius:12px;background:var(--tint,#eef3f7)}
+.article .article-figure figcaption{margin-top:8px;font:600 13px/1.4 var(--display);color:var(--muted)}
 .article h2,.article .boiler{clear:both}
 .article .inline-photo + blockquote.pull,.article .inline-photo + p{overflow:hidden;margin-top:.35em}
 @media (max-width:640px){.article .inline-photo,.article .inline-photo.mid,.article .inline-photo.wide,.article .inline-photo.right{float:none;width:100%;margin:1.4em 0}}
