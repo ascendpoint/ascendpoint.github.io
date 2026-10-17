@@ -283,6 +283,17 @@ def is_handled(msg: dict, bot_user: str) -> bool:
                for r in msg.get("reactions", []))
 
 
+MENTION_RE = re.compile(r"<@([UW][A-Z0-9]+)(?:\|[^>]*)?>")
+
+
+def talking_to_someone_else(msg: dict, bot_user: str) -> bool:
+    """A reply in a robot thread that @mentions a teammate and not the robot ("troubleshooting this @Sonia")
+    is people talking to each other, not a new instruction. Mention the robot too (or reply without
+    @mentioning anyone) and it counts again."""
+    people = set(MENTION_RE.findall(msg.get("text") or ""))
+    return bool(people) and bot_user not in people
+
+
 def is_request(msg: dict, bot_user: str, bot_id: str | None) -> bool:
     """A human message (or a Zapier email post), not from this bot, not chatter."""
     if msg.get("type") != "message":
@@ -342,7 +353,8 @@ def find_next(slack: Slack, channel: str, now: float | None = None,
                 r.setdefault("thread_ts", m["ts"])
                 if float(r["ts"]) < oldest or not bot_in_thread:
                     continue
-                if is_request(r, bot_user, bot_id) and not is_handled(r, bot_user):
+                if (is_request(r, bot_user, bot_id) and not is_handled(r, bot_user)
+                        and not talking_to_someone_else(r, bot_user)):
                     candidates.append((r, thread))
                     found = True
             if not found:
@@ -777,7 +789,7 @@ def run_claude(req: dict, model: str | None = None, max_usd: str | None = None,
     ])
     cmd = ["claude", "-p", prompt,
            "--append-system-prompt", CLAUDE_RULES.format(files_dir=files_rel(), result=RESULT),
-           "--add-dir", str(FILES_DIR), "--add-dir", str(SHOTS_DIR),
+           "--add-dir", str(FILES_DIR), "--add-dir", str(SHOTS_DIR), "--add-dir", str(RESULT.parent),
            "--allowedTools", allowed,
            "--disallowedTools", "WebFetch,WebSearch,Bash(git:*),Bash(curl:*)",
            "--permission-mode", "dontAsk",
@@ -836,6 +848,34 @@ def wait_live(sha: str, live_url: str, timeout: int = 9 * 60, poll: float = 5, o
             print("live check:", e, file=sys.stderr, flush=True)
         sleep(poll)
     return False
+
+
+def page_link(live: str, page: str, version: str) -> str:
+    return f"{live}{page}" + (("&" if "?" in page else "?") + f"v={version}" if version else "")
+
+
+def pages_open(pages: list[str], live: str, version: str, timeout: int = 3 * 60, poll: float = 5,
+               opener=None, sleep=time.sleep, clock=time.time) -> list[str]:
+    """The exact links the reply will show must open (200) before we say "Live": version.txt can flip a
+    moment before every new page is served (Oct 17: a brand-new blog post briefly answered 404).
+    Returns the pages that still don't open after `timeout`."""
+    opener = opener or urllib.request.urlopen
+    pending, end = list(pages[:8]), clock() + timeout
+    while pending:
+        still = []
+        for page in pending:
+            req = urllib.request.Request(page_link(live, page, version), headers={"User-Agent": LIVE_UA})
+            try:
+                with opener(req, timeout=20) as r:
+                    if getattr(r, "status", 200) != 200:
+                        still.append(page)
+            except Exception:
+                still.append(page)
+        pending = still
+        if not pending or clock() >= end:
+            break
+        sleep(poll)
+    return pending
 
 
 def sync_main():
@@ -902,8 +942,7 @@ def not_live_note(sha: str) -> tuple[bool, str]:
 def links(pages: list[str], live: str, version: str = "") -> str:
     """Page links for a reply. `version` (a short commit id) is added as ?v=..., so each link is a URL no
     browser or CDN has cached before: the page opens fresh without clearing the cache."""
-    q = lambda p: (("&" if "?" in p else "?") + f"v={version}") if version else ""
-    return "\n".join(f"• {live}{p}{q(p)}" for p in pages[:8])
+    return "\n".join(f"• {page_link(live, p, version)}" for p in pages[:8])
 
 
 def drop_outside_site() -> list[str]:
@@ -1176,6 +1215,11 @@ def make_change(req: dict, slack: Slack, live: str, preview: bool) -> tuple[str,
     sha = commit_and_ship(req, summary)
     live_ok = wait_live(sha, live)
     failed, note = (False, "") if live_ok else not_live_note(sha)
+    if live_ok:
+        slow = pages_open(pages, live, sha[:7])
+        if slow:
+            note = ("\n_(Still finishing publishing: " + ", ".join(slow) + ". If a link shows \"not found\", "
+                    "give it a minute.)_")
     if failed:
         return "warning", (f"⚠️ Saved but NOT live yet: {summary}{note}\n"
                            f"_Reply *undo* here to drop it._\n_{footer}_")
