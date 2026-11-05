@@ -52,6 +52,9 @@ jobs:
       EXEC_PEOPLE: ${{ vars.EXEC_PEOPLE }}
       EXEC_APPROVERS: ${{ vars.EXEC_APPROVERS }}
       EXEC_SKIP: ${{ vars.EXEC_SKIP }}
+      # Private mode: only these watched channels get the 📥 mark (the robot answers there in the open); anywhere
+      # else their message is never touched and the robot answers Kyle privately. Default: #s-leads-and-meetings.
+      EXEC_PUBLIC_CHANNELS: ${{ vars.EXEC_PUBLIC_CHANNELS }}
       EXEC_POLL_SECONDS: ${{ vars.EXEC_POLL_SECONDS }}
       EXEC_TRIAGE_MODEL: ${{ vars.EXEC_TRIAGE_MODEL }}
       SITE_CHANNEL: ${{ vars.SLACK_CHANNEL_ID }}

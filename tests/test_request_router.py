@@ -374,7 +374,8 @@ PAT, SONIA, KYLE, ADAM = "U06D77DKB88", "U07TJCUD6JC", "U04Q3M29UKE", "UADAM"
 LEADS = "CLEADS"
 EXEC_ENV = {"EXEC_ROUTE": "ascendpoint/ads-assistant#exec-request", "EXEC_PEOPLE": f"{PAT}=Patrick,{SONIA}",
             "ROUTER_OWNER": KYLE, "EXEC_SKIP": "CSKIP", "SITE_CHANNEL": "CSITE", "EXEC_POLL_SECONDS": "60",
-            "ANTHROPIC_API_KEY": "sk-test", "ANTHROPIC_WORKSPACE_ID": "wrkspc_1"}
+            "ANTHROPIC_API_KEY": "sk-test", "ANTHROPIC_WORKSPACE_ID": "wrkspc_1",
+            "EXEC_PUBLIC_CHANNELS": f"{LEADS}=s-leads-and-meetings"}   # the test #s-leads channel is answered in the open
 
 
 class ExecSlack(FakeSlack):
@@ -554,6 +555,138 @@ class ExecWatchTests(unittest.TestCase):
         self.assertEqual(s.reacted("reactions.remove"), [(s.history[0]["ts"], "inbox_tray"), (s.history[1]["ts"], "inbox_tray")])
         n, _ = self.run_once(s, cache=cache, now=self.now + 61)
         self.assertEqual(n, 2)
+
+
+class PrivateModeTests(ExecWatchTests):
+    """Outside EXEC_PUBLIC_CHANNELS a Patrick/Sonia request is sent without any mark on the message; the router's own
+    memory (saved across restarts, seeded from the exec log) keeps it from being sent twice."""
+    MARKETING = "CMARKETING"
+
+    def setUp(self):
+        super().setUp()
+        self.pub = mock.patch.dict(os.environ, {"EXEC_PUBLIC_CHANNELS": f"{LEADS}=s-leads-and-meetings"})
+        self.pub.start()
+
+    def tearDown(self):
+        self.pub.stop()
+        super().tearDown()
+
+    def test_public_list(self):
+        self.assertEqual(rr.exec_config()["public"], {LEADS})
+        with mock.patch.dict(os.environ, {"EXEC_PUBLIC_CHANNELS": ""}):
+            self.assertEqual(rr.exec_public(), {"CJFBHDJQN"})          # blank (unset variable) = the default
+        with mock.patch.dict(os.environ, {"EXEC_PUBLIC_CHANNELS": "none"}):
+            self.assertEqual(rr.exec_public(), set())
+
+    def test_private_channel_request_is_sent_with_no_reaction(self):
+        q = msg(self.now - 30, user=SONIA, text=f"<@{KYLE}> the QR in the webinar deck isn't working, can you fix it?")
+        s = ExecSlack([q], channels=[self.MARKETING])
+        n, cache = self.run_once(s)
+        self.assertEqual(n, 1)
+        self.assertEqual(self.sent[0][1]["client_payload"], {"channel": self.MARKETING, "ts": q["ts"], "thread_ts": None})
+        self.assertEqual([m for m, p in s.calls if m.startswith("reactions.")], [])
+        self.assertEqual([m for m, p in s.calls if m == "chat.postMessage"], [])
+        self.assertIn(q["ts"], cache["exec_seen"])
+        # next poll: not screened or sent again (nothing on the message says so; the router remembers)
+        self.run_once(s, cache=cache, now=self.now + 61)
+        self.assertEqual((len(self.sent), len(self.screens)), (1, 1))
+
+    def test_public_channel_still_gets_the_mark(self):
+        q = msg(self.now - 30, user=PAT, text="what's the count?")
+        s = ExecSlack([q], channels=[LEADS])
+        self.run_once(s)
+        self.assertEqual(s.reacted("reactions.add"), [(q["ts"], "inbox_tray")])
+
+    def test_failed_private_dispatch_retries_without_touching_the_message(self):
+        q = msg(self.now - 30, user=SONIA, text="how many booked calls today?")
+        s = ExecSlack([q], channels=[self.MARKETING])
+        n, cache = self.run_once(s, status=404)
+        self.assertEqual(n, 0)
+        self.assertEqual([m for m, p in s.calls if m.startswith("reactions.")], [])
+        self.assertEqual([p["channel"] for m, p in s.calls if m == "chat.postMessage"], [KYLE])   # owner told once
+        self.assertEqual(self.run_once(s, cache=cache, now=self.now + 61)[0], 1)
+
+    def test_state_survives_a_restart(self):
+        import tempfile
+        path = Path(tempfile.mkdtemp()) / "state.json"
+        cache = {"exec_seen": {"1.1", "2.2"}, "exec_start": self.now - 1000}
+        rr.save_state(cache, path)
+        fresh: dict = {}
+        self.assertTrue(rr.load_state(fresh, path, now=self.now))
+        self.assertEqual((fresh["exec_seen"], fresh["exec_start"], fresh["exec_seeded"]), ({"1.1", "2.2"}, self.now - 1000, True))
+        self.assertFalse(path.exists())                                   # read once
+        self.assertFalse(rr.load_state({}, path, now=self.now))           # gone
+        rr.save_state(cache, path)
+        self.assertFalse(rr.load_state({}, path, now=self.now + rr.EXEC_MAX_AGE + 1))   # too old to trust
+        # a restarted router doesn't re-send what the previous process sent
+        q = msg(self.now - 30, user=SONIA, text="can you fix the QR?")
+        s = ExecSlack([q], channels=[self.MARKETING])
+        n, cache = self.run_once(s)
+        self.assertEqual(n, 1)
+        rr.save_state(cache, path)
+        again: dict = {}
+        rr.load_state(again, path, now=self.now)
+        self.assertEqual(self.run_once(s, cache=again, now=self.now + 61)[0], 0)
+        self.assertEqual(len(self.sent), 1)
+
+    def test_fresh_start_is_seeded_from_the_exec_log(self):
+        import datetime as dt
+        today = dt.datetime.fromtimestamp(self.now, dt.timezone.utc)
+        recent = (today - dt.timedelta(minutes=5)).isoformat(timespec="seconds")
+        old = (today - dt.timedelta(hours=9)).isoformat(timespec="seconds")
+        rows = [{"at": recent, "ts": "1700000000.000100", "channel": self.MARKETING, "request": "secret text"},
+                {"at": old, "ts": "1600000000.000100", "channel": self.MARKETING},
+                {"at": "bad", "ts": "1.5"}, {"ts": "no-at"}]
+        got = []
+
+        def log_opener(req, timeout=30):
+            got.append((req.full_url, dict(req.headers)))
+            if "2099-" in req.full_url:
+                raise urllib.error.HTTPError(req.full_url, 404, "nf", {}, None)
+
+            class R(FakeResp):
+                def read(s):
+                    return ("\n".join(json.dumps(r) for r in rows) + "\n").encode()
+            return R(200)
+        import urllib.error
+        cache: dict = {}
+        with mock.patch.object(rr, "print") if hasattr(rr, "print") else mock.patch("builtins.print") as pr:
+            n = rr.exec_seed("tok", rr.exec_config(), cache, opener=log_opener, now=self.now)
+        self.assertEqual(n, 1)
+        self.assertEqual(cache["exec_seen"], {"1700000000.000100"})
+        self.assertTrue(cache["exec_seeded"])
+        self.assertTrue(got[0][0].startswith("https://api.github.com/repos/ascendpoint/ads-assistant/contents/exec/log/"))
+        self.assertEqual(got[0][1].get("Authorization"), "Bearer tok")
+        self.assertFalse(any("secret text" in str(c) for c in pr.call_args_list))   # never prints request text
+        self.assertEqual(rr.exec_seed("tok", rr.exec_config(), cache, opener=log_opener, now=self.now), 0)  # once
+        # seeded messages aren't sent again, even without a reaction on them
+        q = msg(1700000000.0001, user=SONIA, text="can you fix the QR?")
+        s = ExecSlack([q], channels=[self.MARKETING])
+        cache["exec_start"] = 1700000000.0 - 60
+        self.assertEqual(self.run_once(s, cache=cache, now=1700000000.0 + 100)[0], 0)
+
+    def test_listen_seeds_and_saves_state_on_restart(self):
+        import tempfile
+        t = {"now": self.now}
+        s = ExecSlack([], channels=[self.MARKETING])
+        path = Path(tempfile.mkdtemp()) / "state.json"
+        with mock.patch.object(rr, "STATE_FILE", path), mock.patch.object(rr, "code_changed", return_value=True), \
+                mock.patch.object(rr, "exec_seed", return_value=0) as seed, \
+                mock.patch.object(rr.os, "execv", side_effect=SystemExit("restarted")), \
+                mock.patch.dict(rr.os.environ, {}, clear=False):
+            with self.assertRaises(SystemExit):
+                rr.listen(s, {CH: REPO}, "tok", minutes=60, poll=400, sleep=lambda x: t.update(now=t["now"] + x),
+                          clock=lambda: t["now"], watch_code=True)
+            self.assertEqual(seed.call_count, 1)
+            self.assertTrue(path.exists())
+            rr.os.environ.pop("LISTEN_UNTIL", None)
+            # the restarted process reads the state instead of seeding again
+            t2 = {"now": t["now"] + 1}
+            with self.assertRaises(SystemExit):
+                rr.listen(s, {CH: REPO}, "tok", minutes=60, poll=400, sleep=lambda x: t2.update(now=t2["now"] + x),
+                          clock=lambda: t2["now"], watch_code=True)
+            self.assertEqual(seed.call_count, 1)
+            rr.os.environ.pop("LISTEN_UNTIL", None)
 
 
 class HandoffRoutingTests(unittest.TestCase):

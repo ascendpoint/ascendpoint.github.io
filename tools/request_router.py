@@ -35,6 +35,10 @@ every other channel the bot is in is polled once a minute (EXEC_POLL_SECONDS) fo
 (ANTHROPIC_API_KEY, EXEC_TRIAGE_MODEL, default claude-haiku-4-5; keyword rules if it can't be reached) decides whether
 each is a request we could do, and those are sent to the exec robot. Follow-ups in its threads (⚡ footer) from them or
 EXEC_APPROVERS / the owner go straight through. EXEC_SKIP / SITE_CHANNEL: channels to leave alone.
+Private mode (Kyle, Nov 5 2026): only in EXEC_PUBLIC_CHANNELS (default #s-leads-and-meetings; the routed assistant
+channels are public by construction) does a request get the 📥 mark. Everywhere else the message is never touched —
+the exec robot answers Kyle privately — so the router remembers what it sent itself (exec_seen, kept across its own
+restarts in .router-state.json and seeded from the robot's exec/log on a fresh start).
 
 Social clock (SOCIAL_SCHEDULE="owner/repo:path/to/schedule.json"): once a minute the router reads the social robot's
 schedule (when a post is due to publish, needs confirming or a retry) and sends that repo a "social-tick" dispatch
@@ -370,6 +374,19 @@ def _ids(raw: str | None) -> set[str]:
     return {p.strip().partition("=")[0].strip() for p in (raw or "").split(",") if p.strip().partition("=")[0].strip()}
 
 
+EXEC_PUBLIC_DEFAULT = {"CJFBHDJQN"}    # #s-leads-and-meetings: answered in the open
+STATE_FILE = Path(__file__).resolve().parent.parent / ".router-state.json"   # survives this router's own restarts
+
+
+def exec_public() -> set[str]:
+    """Channels where a Patrick/Sonia request may be marked 📥 (the robot answers there in the open). Blank = the
+    default; 'none' = no watched channel is public (every request is handled privately)."""
+    raw = (os.environ.get("EXEC_PUBLIC_CHANNELS") or "").strip()
+    if raw.lower() == "none":
+        return set()
+    return _ids(raw) if raw else set(EXEC_PUBLIC_DEFAULT)
+
+
 def exec_config() -> dict | None:
     route = (os.environ.get("EXEC_ROUTE") or "").strip()
     people = _ids(os.environ.get("EXEC_PEOPLE"))
@@ -378,7 +395,78 @@ def exec_config() -> dict | None:
     owner = os.environ.get("ROUTER_OWNER") or DEFAULT_OWNER
     skip = _ids(os.environ.get("EXEC_SKIP")) | _ids(os.environ.get("SITE_CHANNEL"))
     return {"route": route, "people": people, "followers": people | {owner} | _ids(os.environ.get("EXEC_APPROVERS")),
-            "skip": skip, "owner": owner, "poll": float(os.environ.get("EXEC_POLL_SECONDS") or 60)}
+            "skip": skip, "owner": owner, "poll": float(os.environ.get("EXEC_POLL_SECONDS") or 60),
+            "public": exec_public()}
+
+
+def exec_seed(token: str, cfg: dict, cache: dict, opener=None, now: float | None = None) -> int:
+    """Fresh start: read the exec robot's log (exec/log/<month>.jsonl in the route's repo, same token as the
+    dispatches) and treat every message it handled in the last EXEC_MAX_AGE as already sent — private-mode messages
+    carry no reaction, so this is what keeps a restart from sending them twice. Only timestamps are kept."""
+    if cache.get("exec_seeded"):
+        return 0
+    cache["exec_seeded"] = True
+    now = now or time.time()
+    repo = split_route(cfg["route"])[0]
+    opener = opener or urllib.request.urlopen
+    seen = cache.setdefault("exec_seen", set())
+    import datetime as dt
+    day = dt.datetime.fromtimestamp(now, dt.timezone.utc)
+    months = {day.strftime("%Y-%m"), (day - dt.timedelta(days=1)).strftime("%Y-%m")}
+    added = 0
+    for month in sorted(months):
+        req = urllib.request.Request(f"https://api.github.com/repos/{repo}/contents/exec/log/{month}.jsonl?ref=main",
+                                     headers={"Authorization": f"Bearer {token}", "Accept": "application/vnd.github.raw+json",
+                                              "X-GitHub-Api-Version": "2022-11-28"})
+        try:
+            with opener(req, timeout=30) as r:
+                body = r.read().decode()
+        except Exception as e:
+            if int(getattr(e, "code", 0) or 0) != 404:
+                print(f"exec seed: couldn't read {month} ({type(e).__name__} {getattr(e, 'code', '')})",
+                      file=sys.stderr, flush=True)
+            continue
+        for line in body.splitlines():
+            try:
+                row = json.loads(line)
+                at = dt.datetime.fromisoformat(str(row.get("at"))).timestamp()
+            except (ValueError, TypeError):
+                continue
+            if row.get("ts") and now - at <= EXEC_MAX_AGE and row["ts"] not in seen:
+                seen.add(row["ts"])
+                added += 1
+    print(f"exec seed: {added} recent message(s) already handled", flush=True)
+    return added
+
+
+def save_state(cache: dict, path: Path | None = None):
+    """What the next router process (after a code-update restart) must not redo: the exec messages already sent."""
+    path = path or STATE_FILE
+    try:
+        path.write_text(json.dumps({"exec_seen": sorted(cache.get("exec_seen", set()))[-2000:],
+                                    "exec_start": cache.get("exec_start", 0), "saved_at": time.time()}))
+    except Exception as e:
+        print(f"state save failed: {type(e).__name__}", file=sys.stderr, flush=True)
+
+
+def load_state(cache: dict, path: Path | None = None, now: float | None = None) -> bool:
+    """Read (and remove) the state the previous process saved; ignored when older than EXEC_MAX_AGE."""
+    path = path or STATE_FILE
+    try:
+        if not path.exists():
+            return False
+        st = json.loads(path.read_text())
+        path.unlink()
+    except Exception as e:
+        print(f"state load failed: {type(e).__name__}", file=sys.stderr, flush=True)
+        return False
+    if (now or time.time()) - float(st.get("saved_at") or 0) > EXEC_MAX_AGE:
+        return False
+    cache.setdefault("exec_seen", set()).update(st.get("exec_seen") or [])
+    if st.get("exec_start"):
+        cache["exec_start"] = float(st["exec_start"])
+    cache["exec_seeded"] = True            # the previous process already knew what was handled
+    return True
 
 
 def exec_channels(slack, routes: dict, cfg: dict, cache: dict, now: float) -> list[str]:
@@ -530,6 +618,7 @@ def exec_once(slack, routes: dict, token: str, cache: dict, bot_user: str, opene
     retry_at = cache.setdefault("exec_retry", {})
     sent = 0
     for channel in exec_channels(slack, routes, cfg, cache, now):
+        public = channel in cfg["public"]       # private channels: the message is never marked (no 📥)
         try:
             items = exec_pending(slack, channel, cfg, bot_user, oldest, cache)
         except Exception as e:
@@ -544,16 +633,18 @@ def exec_once(slack, routes: dict, token: str, cache: dict, bot_user: str, opene
                 if not act:
                     seen.add(it["ts"])
                     continue
-            slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=QUEUED)
+            if public:
+                slack.call("reactions.add", channel=channel, timestamp=it["ts"], name=QUEUED)
             status: dict = {}
             if dispatch(cfg["route"], token, {"channel": channel, "ts": it["ts"], "thread_ts": it["thread_ts"]},
                         opener, status):
                 seen.add(it["ts"])
                 sent += 1
                 retry_at.pop(it["ts"], None)
-                print(f"queued {it['ts']} -> exec", flush=True)
+                print(f"queued {it['ts']} -> exec{'' if public else ' (private)'}", flush=True)
             else:
-                slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=QUEUED)
+                if public:
+                    slack.call("reactions.remove", channel=channel, timestamp=it["ts"], name=QUEUED)
                 retry_at[it["ts"]] = now + RETRY_SECONDS
                 if it["thread_ts"]:          # re-read that thread next time
                     cache.setdefault(("exec_quiet", channel), {}).pop(it["thread_ts"], None)
@@ -588,6 +679,12 @@ def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0
     last_pull = clock()
     cache: dict = {}
     total = 0
+    cfg = exec_config()
+    if cfg and not load_state(cache, now=clock()):      # fresh process: what did the exec robot already handle?
+        try:
+            exec_seed(token, cfg, cache, now=clock())
+        except Exception as e:
+            print(f"exec seed error: {type(e).__name__}", file=sys.stderr, flush=True)
     while clock() < end:
         try:
             social_clock(token, cache)
@@ -607,6 +704,7 @@ def listen(slack, routes, token, minutes: float, poll: float, start: float = 0.0
             if code_changed(snapshot):             # e.g. new "handled" reactions: restart into the new code
                 print("router code updated on main; restarting", flush=True)
                 os.environ["LISTEN_UNTIL"] = str(end)
+                save_state(cache)                  # private-mode messages carry no mark: don't send them again
                 os.execv(sys.executable, [sys.executable, str(CODE[0]), "listen"])
         sleep(poll)
     print(f"router done: {total} request(s) queued", flush=True)
